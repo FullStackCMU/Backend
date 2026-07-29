@@ -1,9 +1,9 @@
 name: CI/CD
 
-# ทุกครั้งที่ push ขึ้น main → typecheck/build → build Docker image → push ขึ้น Docker Hub
+# push branch ไหนก็รัน CI (typecheck/build) เห็นผลได้เลยระหว่างทำงาน
+# แต่ build+push image ขึ้น Docker Hub เฉพาะตอนอยู่ main (หลัง PR merge) เท่านั้น
 on:
   push:
-    branches: [main]
   workflow_dispatch: # กดรันเองได้จากหน้า Actions
 
 jobs:
@@ -31,16 +31,18 @@ jobs:
       - name: Build (typecheck)
         run: pnpm run build
 
+      # login เฉพาะตอนอยู่ main (ตอนที่จะ push image จริง)
       - name: Login to Docker Hub
+        if: github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # CD: build image จาก Dockerfile แล้ว push ทับ :latest
+      # build image เสมอ (เช็คว่า Dockerfile build ผ่าน) แต่ push เฉพาะ main
       - name: Build & push image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          push: ${{ github.ref == 'refs/heads/main' }}
           tags: xielnwza/preflight-backend:latest
