@@ -1,0 +1,48 @@
+name: CI/CD
+
+# push branch ไหนก็รัน CI (typecheck/build) เห็นผลได้เลยระหว่างทำงาน
+# แต่ build+push image ขึ้น Docker Hub เฉพาะตอนอยู่ main (หลัง PR merge) เท่านั้น
+on:
+  push:
+  workflow_dispatch: # กดรันเองได้จากหน้า Actions
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      # CI: typecheck + compile (tsc && tsc-alias) — พังตรงนี้จะไม่ push image
+      - name: Build (typecheck)
+        run: pnpm run build
+
+      # login เฉพาะตอนอยู่ main (ตอนที่จะ push image จริง)
+      - name: Login to Docker Hub
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # build image เสมอ (เช็คว่า Dockerfile build ผ่าน) แต่ push เฉพาะ main
+      - name: Build & push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: xielnwza/preflight-backend:latest
