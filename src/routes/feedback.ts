@@ -11,6 +11,8 @@ import {
 } from "@db/schema.js";
 import { and, asc, eq, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { randomInt } from "node:crypto";
+import { MIN_PEERS_FOR_ANONYMITY } from "../config.ts";
+import { listCourseStudents } from "../lib/course-members.ts";
 import { Router, type Request } from "express";
 import {
   authenticate,
@@ -94,6 +96,7 @@ const courseIdOfRound = async (req: Request) => (await findRound(String(req.para
 //   scores   (มีเมื่อ scores_released_at ถึงแล้ว): ค่าเฉลี่ยจากเพื่อนรายข้อ เทียบกับคะแนนที่ให้ตัวเอง
 //   comments (มีเมื่อ feedback_released_at ถึงแล้ว): ความเห็นจากเพื่อน ไม่ระบุชื่อ สลับลำดับ
 //   ยังไม่ release → เป็น null (หน้าเว็บแสดงว่ารออาจารย์เผยแพร่)
+//   เพื่อนส่งให้น้อยกว่า MIN_PEERS_FOR_ANONYMITY คน → null ทั้งคู่ + withheldReason
 router.get(
   "/rounds/:roundId",
   authenticate,
@@ -166,9 +169,12 @@ router.get(
 
       const scoresReleased = isReleased(round.scoresReleasedAt, now);
       const feedbackReleased = isReleased(round.feedbackReleasedAt, now);
+      const peerCount = new Set(received.map((r) => r.evaluatorId)).size;
+      // เพื่อนประเมินน้อยเกินไป → ไม่ส่งทั้งคะแนนและความเห็น (กันรู้ตัวคนเขียน)
+      const withheld = (scoresReleased || feedbackReleased) && peerCount < MIN_PEERS_FOR_ANONYMITY;
 
       let scores = null;
-      if (scoresReleased) {
+      if (scoresReleased && !withheld) {
         // คะแนนที่ฉันให้ตัวเอง (เฉพาะที่ส่งแล้ว)
         const selfRatings =
           mine?.status === "submitted"
@@ -202,7 +208,7 @@ router.get(
           });
       }
 
-      const comments = feedbackReleased
+      const comments = feedbackReleased && !withheld
         ? questions
             .filter((q) => q.type === "text")
             .map((q) => ({
@@ -232,9 +238,165 @@ router.get(
           groupName: group?.name ?? null,
           mySubmission: mine ? { status: mine.status, submittedAt: mine.submittedAt } : null,
           /** จำนวนเพื่อนที่ส่งแบบประเมินให้ฉัน */
-          peerCount: new Set(received.map((r) => r.evaluatorId)).size,
+          peerCount,
+          /** มีค่า = เผยแพร่แล้วแต่ไม่แสดงผลเพื่อรักษาความเป็นนิรนาม */
+          withheldReason: withheld ? "ผู้ประเมินไม่พอสำหรับแสดงผลแบบไม่ระบุชื่อ" : null,
+          minPeers: MIN_PEERS_FOR_ANONYMITY,
           scores,
           comments,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ───────────── อาจารย์: แดชบอร์ดผลประเมิน (เห็นทุกอย่างรวมถึงชื่อผู้เขียน) ─────────────
+
+type ReceivedRow = {
+  evaluatorId: string;
+  evaluateeId: string;
+  groupId: string;
+  questionId: string;
+  score: number | null;
+  comment: string | null;
+};
+
+// คำตอบทั้งหมดของรอบจาก submission ที่ส่งแล้ว
+async function roundRatings(roundId: string): Promise<ReceivedRow[]> {
+  return dbClient
+    .select({
+      evaluatorId: submissionsTable.evaluatorId,
+      evaluateeId: ratingsTable.evaluateeId,
+      groupId: submissionsTable.groupId,
+      questionId: ratingsTable.questionId,
+      score: ratingsTable.score,
+      comment: ratingsTable.comment,
+    })
+    .from(ratingsTable)
+    .innerJoin(submissionsTable, eq(submissionsTable.id, ratingsTable.submissionId))
+    .where(and(eq(submissionsTable.roundId, roundId), eq(submissionsTable.status, "submitted")));
+}
+
+const average = (xs: number[]) => (xs.length ? round1(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
+
+// GET /feedback/rounds/:roundId/overview — ตารางคะแนนของทุกคนในรอบ จัดกลุ่มตามทีม
+router.get(
+  "/rounds/:roundId/overview",
+  authenticate,
+  requireCourseRole("instructor", courseIdOfRound),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const round = await findRound(String(req.params.roundId));
+      const [questions, students, submissions, ratings, groups] = await Promise.all([
+        dbClient.select().from(questionsTable).orderBy(asc(questionsTable.orderNo)),
+        listCourseStudents(round.courseId),
+        dbClient
+          .select({
+            evaluatorId: submissionsTable.evaluatorId,
+            groupId: submissionsTable.groupId,
+            status: submissionsTable.status,
+            submittedAt: submissionsTable.submittedAt,
+          })
+          .from(submissionsTable)
+          .where(eq(submissionsTable.roundId, round.id)),
+        roundRatings(round.id),
+        dbClient
+          .select({ id: groupsTable.id, name: groupsTable.name })
+          .from(groupsTable)
+          .where(eq(groupsTable.courseId, round.courseId))
+          .orderBy(asc(groupsTable.createdAt)),
+      ]);
+      const ratingQuestions = questions.filter((q) => q.type === "rating");
+
+      const rows = students.map((s) => {
+        const own = submissions.find((x) => x.evaluatorId === s.id);
+        const peer = ratings.filter((r) => r.evaluateeId === s.id && r.evaluatorId !== s.id);
+        // กลุ่มในรอบนี้: submission ของตัวเอง → กลุ่มของเพื่อนที่ประเมิน → กลุ่มปัจจุบัน
+        const groupId = own?.groupId ?? peer[0]?.groupId ?? s.group?.id ?? null;
+        return {
+          student: { id: s.id, studentId: s.studentId, name: s.name },
+          groupId,
+          submission: own ? { status: own.status, submittedAt: own.submittedAt } : null,
+          peerCount: new Set(peer.map((r) => r.evaluatorId)).size,
+          scores: ratingQuestions.map((q) => ({
+            questionId: q.id,
+            peerAverage: average(peer.filter((r) => r.questionId === q.id && r.score !== null).map((r) => r.score!)),
+            selfScore:
+              ratings.find((r) => r.evaluatorId === s.id && r.evaluateeId === s.id && r.questionId === q.id)?.score ??
+              null,
+          })),
+        };
+      });
+
+      res.json({
+        msg: "Fetch round overview successfully",
+        data: {
+          round: {
+            id: round.id,
+            courseId: round.courseId,
+            sequenceNo: round.sequenceNo,
+            opensAt: round.opensAt,
+            closesAt: round.closesAt,
+            scaleMin: round.scaleMin,
+            scaleMax: round.scaleMax,
+            scoresReleasedAt: round.scoresReleasedAt,
+            feedbackReleasedAt: round.feedbackReleasedAt,
+          },
+          questions: ratingQuestions.map((q) => ({ id: q.id, orderNo: q.orderNo, prompt: q.prompt })),
+          groups: [
+            ...groups.map((g) => ({ id: g.id, name: g.name, rows: rows.filter((r) => r.groupId === g.id) })),
+            { id: null, name: "ยังไม่มีกลุ่ม", rows: rows.filter((r) => !r.groupId) },
+          ].filter((g) => g.rows.length > 0),
+          minPeers: MIN_PEERS_FOR_ANONYMITY,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// GET /feedback/rounds/:roundId/students/:studentId — คะแนน/ความเห็นที่นักศึกษาคนนี้ได้รับ แยกตามผู้ประเมิน
+router.get(
+  "/rounds/:roundId/students/:studentId",
+  authenticate,
+  requireCourseRole("instructor", courseIdOfRound),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const round = await findRound(String(req.params.roundId));
+      const studentId = String(req.params.studentId);
+      const students = await listCourseStudents(round.courseId);
+      const student = students.find((s) => s.id === studentId);
+      if (!student) throw httpError(404, "ไม่พบนักศึกษาคนนี้ในวิชา");
+
+      const questions = await dbClient.select().from(questionsTable).orderBy(asc(questionsTable.orderNo));
+      const received = (await roundRatings(round.id)).filter((r) => r.evaluateeId === studentId);
+      const names = new Map(students.map((s) => [s.id, s.name]));
+
+      // ตัวเองก่อน แล้วตามด้วยเพื่อน
+      const evaluatorIds = [...new Set(received.map((r) => r.evaluatorId))].sort((a, b) =>
+        a === studentId ? -1 : b === studentId ? 1 : 0
+      );
+      const evaluations = evaluatorIds.map((id) => {
+        const rows = received.filter((r) => r.evaluatorId === id);
+        return {
+          evaluator: { id, name: names.get(id) ?? "(ไม่อยู่ในวิชาแล้ว)", isSelf: id === studentId },
+          answers: questions.map((q) => {
+            const r = rows.find((x) => x.questionId === q.id);
+            return { questionId: q.id, score: r?.score ?? null, comment: r?.comment ?? null };
+          }),
+        };
+      });
+
+      res.json({
+        msg: "Fetch student feedback successfully",
+        data: {
+          student: { id: student.id, studentId: student.studentId, name: student.name, group: student.group },
+          questions: questions.map((q) => ({ id: q.id, orderNo: q.orderNo, type: q.type, prompt: q.prompt })),
+          scale: { min: round.scaleMin, max: round.scaleMax },
+          evaluations,
         },
       });
     } catch (err) {

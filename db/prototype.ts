@@ -17,7 +17,7 @@ const DAY = 24 * 60 * 60 * 1000;
 const daysFromNow = (n: number) => new Date(Date.now() + n * DAY);
 
 // ต้องตรงกับ Backend/src/config.ts (CONSENT_POLICY_VERSION)
-const CONSENT_POLICY_VERSION = "2026-09-v1";
+const CONSENT_POLICY_VERSION = "2026-09-v2";
 
 // ลบตามลำดับ dependency (ลูกก่อนแม่)
 async function resetAll() {
@@ -93,6 +93,98 @@ const ROUND1: Record<string, Record<string, [Scores, Comments]>> = {
     ]],
   },
 };
+
+/** วิชาที่ 2 (261492) รอบ 1 — patiphan ได้รับการประเมินจากเพื่อน 2 คน (ถึงเกณฑ์แสดงผลแบบนิรนาม) */
+const COURSE2_ROUND1: Record<string, Record<string, [Scores, Comments]>> = {
+  patiphan: {
+    patiphan: [[4, 3, 4], [
+      "ดูแลการ deploy และแก้ปัญหา CI ให้ทีมได้ทันเวลา",
+      "ควรแบ่งงานให้คนอื่นมากขึ้น ไม่รับไว้ทำคนเดียวทั้งหมด",
+    ]],
+    somying: [[4, 4, 5], [
+      "เขียน test ละเอียดมาก ช่วยจับบั๊กได้หลายจุดก่อนส่งงาน",
+      "อยากให้ถามในกลุ่มเร็วขึ้นเวลาติดปัญหา ไม่ต้องเกรงใจ",
+    ]],
+    kittipong: [[3, 3, 2], [
+      "ช่วยออกแบบฐานข้อมูลได้ดี คิดเผื่อกรณีพิเศษไว้ครบ",
+      "ส่งงานช้ากว่าที่ตกลงไว้ ทำให้คนอื่นต้องรอ",
+    ]],
+  },
+  somying: {
+    somying: [[4, 4, 4], [
+      "เขียน test ครอบคลุมเกือบทุก endpoint",
+      "ต้องกล้าเสนอความเห็นในที่ประชุมมากขึ้น",
+    ]],
+    patiphan: [[5, 4, 4], [
+      "เป็นคนจุดประกายให้ทีมเริ่มงานเร็ว และตอบคำถามเพื่อนเสมอ",
+      "บางครั้งแก้โค้ดของคนอื่นโดยไม่บอกก่อน อยากให้เปิด PR ให้ทุกคนดูก่อน",
+    ]],
+    kittipong: [[3, 2, 3], [
+      "เข้าประชุมตรงเวลาทุกครั้ง",
+      "งานที่รับไปมักเสร็จไม่ครบ อยากให้ประเมินเวลาให้สมจริงขึ้น",
+    ]],
+  },
+  kittipong: {
+    kittipong: [[4, 4, 3], [
+      "ทำ schema ฐานข้อมูลเสร็จตามที่ตกลง",
+      "ต้องจัดเวลาให้ดีกว่านี้",
+    ]],
+    patiphan: [[5, 5, 4], [
+      "ช่วยรีวิวโค้ดละเอียดและอธิบายเข้าใจง่าย",
+      "โดยรวมดีแล้ว อาจลดการประชุมที่ยาวเกินไปลงหน่อย",
+    ]],
+    somying: [[4, 5, 4], [
+      "ละเอียดรอบคอบ งานที่ส่งมีคุณภาพ",
+      "ไม่มีอะไรต้องปรับ ทำแบบนี้ต่อไป",
+    ]],
+  },
+};
+
+type Question = typeof questionsTable.$inferSelect;
+type User = typeof usersTable.$inferSelect;
+
+/** ใส่ submission (ส่งแล้ว) + ratings ของทุกคนในรอบ ตามข้อมูล evaluator → evaluatee */
+async function insertRoundAnswers(opts: {
+  roundId: string;
+  answers: Record<string, Record<string, [Scores, Comments]>>;
+  groupIdOf: (key: string) => string;
+  byKey: Record<string, User>;
+  questions: Question[];
+  submittedAt: Date;
+}) {
+  const ratingQuestions = opts.questions.filter((q) => q.type === "rating");
+  const textQuestions = opts.questions.filter((q) => q.type === "text");
+  for (const [evaluatorKey, targets] of Object.entries(opts.answers)) {
+    const [submission] = await dbClient
+      .insert(submissionsTable)
+      .values({
+        roundId: opts.roundId,
+        groupId: opts.groupIdOf(evaluatorKey),
+        evaluatorId: opts.byKey[evaluatorKey].id,
+        status: "submitted",
+        submittedAt: opts.submittedAt,
+        createdAt: new Date(opts.submittedAt.getTime() - 3 * DAY),
+      })
+      .returning();
+
+    await dbClient.insert(ratingsTable).values(
+      Object.entries(targets).flatMap(([targetKey, [scores, comments]]) => [
+        ...ratingQuestions.map((q, i) => ({
+          submissionId: submission.id,
+          questionId: q.id,
+          evaluateeId: opts.byKey[targetKey].id,
+          score: scores[i],
+        })),
+        ...textQuestions.map((q, i) => ({
+          submissionId: submission.id,
+          questionId: q.id,
+          evaluateeId: opts.byKey[targetKey].id,
+          comment: comments[i],
+        })),
+      ])
+    );
+  }
+}
 
 async function seedAll() {
   // อาจารย์ = wichai.t, patiphan_leknok = นักศึกษาที่ login ผ่าน CPE mock OAuth ได้จริง
@@ -209,50 +301,78 @@ async function seedAll() {
       { orderNo: 5, type: "text", prompt: "สิ่งที่อยากให้ปรับในรอบถัดไป" },
     ])
     .returning();
-  const ratingQuestions = questions.filter((q) => q.type === "rating");
-  const textQuestions = questions.filter((q) => q.type === "text");
 
-  // คนที่ส่งรอบ 1 ต้องให้ consent แล้ว (backend บังคับตอนส่งจริง)
+  // คนที่ส่งรอบ 1 (ทั้ง 2 วิชา) ต้องให้ consent แล้ว (backend บังคับตอนส่งจริง)
+  const consentKeys = new Set([...Object.keys(ROUND1), ...Object.keys(COURSE2_ROUND1)]);
   await dbClient.insert(consentsTable).values(
-    Object.keys(ROUND1).map((key) => ({
+    [...consentKeys].map((key) => ({
       userId: byKey[key].id,
       policyVersion: CONSENT_POLICY_VERSION,
       acceptedAt: daysFromNow(-24),
     }))
   );
 
-  // submissions + ratings ของรอบ 1
-  for (const [evaluatorKey, targets] of Object.entries(ROUND1)) {
-    const group = members.find(([k]) => k === evaluatorKey)![1];
-    const [submission] = await dbClient
-      .insert(submissionsTable)
-      .values({
-        roundId: round1.id,
-        groupId: group.id,
-        evaluatorId: byKey[evaluatorKey].id,
-        status: "submitted",
-        submittedAt: daysFromNow(-16),
-        createdAt: daysFromNow(-19),
-      })
-      .returning();
+  await insertRoundAnswers({
+    roundId: round1.id,
+    answers: ROUND1,
+    groupIdOf: (key) => members.find(([k]) => k === key)![1].id,
+    byKey,
+    questions,
+    submittedAt: daysFromNow(-16),
+  });
 
-    await dbClient.insert(ratingsTable).values(
-      Object.entries(targets).flatMap(([targetKey, [scores, comments]]) => [
-        ...ratingQuestions.map((q, i) => ({
-          submissionId: submission.id,
-          questionId: q.id,
-          evaluateeId: byKey[targetKey].id,
-          score: scores[i],
-        })),
-        ...textQuestions.map((q, i) => ({
-          submissionId: submission.id,
-          questionId: q.id,
-          evaluateeId: byKey[targetKey].id,
-          comment: comments[i],
-        })),
-      ])
-    );
-  }
+  // ───── วิชาที่ 2: 261492 — patiphan อยู่ในกลุ่ม ยอมรับข้อตกลงแล้ว ดูผลรอบ 1 ได้จริง ─────
+  const [course2] = await dbClient
+    .insert(coursesTable)
+    .values({
+      courseCode: "261492",
+      title: "Software Engineering",
+      section: "001",
+      semester: 1,
+      academicYear: 2569,
+      createdBy: instructor.id,
+    })
+    .returning();
+  const course2Students = ["patiphan", "somying", "kittipong"];
+  await dbClient.insert(enrollmentsTable).values([
+    { courseId: course2.id, userId: instructor.id, role: "instructor" },
+    ...course2Students.map((key) => ({ courseId: course2.id, userId: byKey[key].id, role: "student" as const })),
+  ]);
+  const [orion] = await dbClient
+    .insert(groupsTable)
+    .values({ courseId: course2.id, name: "Team Orion", maxMembers: 4, contractText })
+    .returning();
+  await dbClient.insert(groupMembersTable).values(
+    course2Students.map((key) => ({
+      groupId: orion.id,
+      courseId: course2.id,
+      userId: byKey[key].id,
+      joinedAt: daysFromNow(-30),
+      contractAcceptedAt: daysFromNow(-29),
+    }))
+  );
+  const [c2round1, c2round2] = await dbClient
+    .insert(roundsTable)
+    .values([
+      {
+        courseId: course2.id,
+        sequenceNo: 1,
+        opensAt: daysFromNow(-20),
+        closesAt: daysFromNow(-13),
+        scoresReleasedAt: daysFromNow(-8),
+        feedbackReleasedAt: daysFromNow(-8),
+      },
+      { courseId: course2.id, sequenceNo: 2, opensAt: daysFromNow(-2), closesAt: daysFromNow(5) },
+    ])
+    .returning();
+  await insertRoundAnswers({
+    roundId: c2round1.id,
+    answers: COURSE2_ROUND1,
+    groupIdOf: () => orion.id,
+    byKey,
+    questions,
+    submittedAt: daysFromNow(-15),
+  });
 
   console.log({
     instructor: `${instructor.cmuAccount} (${instructor.id})`,
@@ -264,6 +384,7 @@ async function seedAll() {
     ),
     questions: questions.length,
     round1Submissions: Object.keys(ROUND1).length,
+    course2: `${course2.courseCode} ${course2.title} — ${orion.name}, rounds #${c2round1.sequenceNo} (released) #${c2round2.sequenceNo} (open)`,
   });
 }
 
