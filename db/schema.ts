@@ -229,3 +229,26 @@ export const flagsTable = pgTable("flags", {
   modelVersion: varchar("model_version"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
+
+// ความยินยอมให้เก็บ/ประมวลผลข้อมูล (รวมถึงส่งข้อความไปตรวจด้วย AI ภายนอก)
+// 1 แถวต่อ 1 ครั้งที่ยอมรับ — ถอนความยินยอมใช้ withdrawn_at (ไม่ลบแถว)
+export const consentsTable = pgTable(
+  "consents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .references(() => usersTable.id)
+      .notNull(),
+    policyVersion: varchar("policy_version").notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    withdrawnAt: timestamp("withdrawn_at", { withTimezone: true }),
+  },
+  (table) => [
+    // ยอมรับนโยบายเวอร์ชันเดียวกันซ้ำไม่ได้ ถ้ายังไม่ถอน (ถอนแล้วยอมรับใหม่ได้)
+    uniqueIndex("consents_user_id_policy_version_active_idx")
+      .on(table.userId, table.policyVersion)
+      .where(sql`${table.withdrawnAt} IS NULL`),
+  ]
+);

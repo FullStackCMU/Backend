@@ -7,6 +7,7 @@ import helmet from "helmet";
 import morgan from "morgan";
 
 import authRoute from "./routes/auth.ts";
+import consentRoute from "./routes/consent.ts";
 import userRoute from "./routes/user.ts";
 // TODO: route ด้านล่างยังใช้ schema เก่า (import ของที่ถูกลบไปแล้ว จะทำให้ server crash ตอนเริ่ม)
 // ปิดไว้ก่อนจนกว่าจะแก้ให้ตรง schema ใหม่
@@ -44,6 +45,7 @@ app.use(express.json());
 
 // Routes
 app.use("/auth", authRoute);
+app.use("/consents", consentRoute);
 app.use("/users", userRoute);
 // app.use("/courses", courseRoute);
 // app.use("/groups", groupRoute);

@@ -10,6 +10,7 @@ import {
   submissionsTable,
   ratingsTable,
   flagsTable,
+  consentsTable,
 } from "@db/schema.js";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -17,6 +18,7 @@ const daysFromNow = (n: number) => new Date(Date.now() + n * DAY);
 
 // ลบตามลำดับ dependency (ลูกก่อนแม่)
 async function resetAll() {
+  await dbClient.delete(consentsTable);
   await dbClient.delete(flagsTable);
   await dbClient.delete(ratingsTable);
   await dbClient.delete(submissionsTable);
