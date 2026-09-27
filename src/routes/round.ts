@@ -1,6 +1,15 @@
 import { dbClient } from "@db/client.js";
-import { groupMembersTable, roundsTable, submissionsTable } from "@db/schema.js";
-import { and, asc, count, desc, eq, gt, inArray, isNull } from "drizzle-orm";
+import {
+  coursesTable,
+  enrollmentsTable,
+  groupMembersTable,
+  groupsTable,
+  questionsTable,
+  ratingsTable,
+  roundsTable,
+  submissionsTable,
+} from "@db/schema.js";
+import { and, asc, count, desc, eq, gt, inArray, isNull, lte } from "drizzle-orm";
 import { Router, type Request } from "express";
 import {
   authenticate,
@@ -113,6 +122,112 @@ async function listRounds(courseId: string, viewer: { role: "instructor" } | { r
 }
 
 const INSTRUCTOR = { role: "instructor" } as const;
+
+// GET /rounds/assignments — รอบที่เปิดรับอยู่ตอนนี้ จากทุกวิชาที่เป็นนักศึกษา (หน้า "แบบประเมิน")
+// พร้อมกลุ่ม/ข้อตกลง/สถานะการส่ง/ความคืบหน้าของร่าง (ตอบแล้ว x จาก คำถาม × คนในกลุ่ม)
+router.get("/assignments", authenticate, async (req: AuthedRequest, res, next) => {
+  try {
+    const userId = req.user!.id;
+    const now = new Date();
+    const rounds = await dbClient
+      .select({
+        roundId: roundsTable.id,
+        sequenceNo: roundsTable.sequenceNo,
+        opensAt: roundsTable.opensAt,
+        closesAt: roundsTable.closesAt,
+        courseId: coursesTable.id,
+        courseCode: coursesTable.courseCode,
+        section: coursesTable.section,
+        courseTitle: coursesTable.title,
+      })
+      .from(enrollmentsTable)
+      .innerJoin(coursesTable, eq(coursesTable.id, enrollmentsTable.courseId))
+      .innerJoin(roundsTable, eq(roundsTable.courseId, coursesTable.id))
+      .where(
+        and(
+          eq(enrollmentsTable.userId, userId),
+          eq(enrollmentsTable.role, "student"),
+          lte(roundsTable.opensAt, now),
+          gt(roundsTable.closesAt, now)
+        )
+      )
+      .orderBy(asc(roundsTable.closesAt));
+    if (rounds.length === 0) return res.json({ msg: "Fetch assignments successfully", data: [] });
+
+    const courseIds = [...new Set(rounds.map((r) => r.courseId))];
+    const memberships = await dbClient
+      .select({
+        courseId: groupMembersTable.courseId,
+        groupId: groupsTable.id,
+        groupName: groupsTable.name,
+        contractText: groupsTable.contractText,
+        contractAcceptedAt: groupMembersTable.contractAcceptedAt,
+      })
+      .from(groupMembersTable)
+      .innerJoin(groupsTable, eq(groupsTable.id, groupMembersTable.groupId))
+      .where(
+        and(
+          inArray(groupMembersTable.courseId, courseIds),
+          eq(groupMembersTable.userId, userId),
+          isNull(groupMembersTable.leftAt)
+        )
+      );
+    const memberCounts = memberships.length
+      ? await dbClient
+          .select({ groupId: groupMembersTable.groupId, count: count() })
+          .from(groupMembersTable)
+          .where(
+            and(
+              inArray(groupMembersTable.groupId, memberships.map((m) => m.groupId)),
+              isNull(groupMembersTable.leftAt)
+            )
+          )
+          .groupBy(groupMembersTable.groupId)
+      : [];
+
+    const submissions = await dbClient
+      .select({
+        id: submissionsTable.id,
+        roundId: submissionsTable.roundId,
+        status: submissionsTable.status,
+        submittedAt: submissionsTable.submittedAt,
+      })
+      .from(submissionsTable)
+      .where(
+        and(
+          inArray(submissionsTable.roundId, rounds.map((r) => r.roundId)),
+          eq(submissionsTable.evaluatorId, userId)
+        )
+      );
+    const answered = submissions.length
+      ? await dbClient
+          .select({ submissionId: ratingsTable.submissionId, count: count() })
+          .from(ratingsTable)
+          .where(inArray(ratingsTable.submissionId, submissions.map((s) => s.id)))
+          .groupBy(ratingsTable.submissionId)
+      : [];
+    const [{ questionCount }] = await dbClient.select({ questionCount: count() }).from(questionsTable);
+
+    const data = rounds.map((r) => {
+      const m = memberships.find((x) => x.courseId === r.courseId);
+      const sub = submissions.find((s) => s.roundId === r.roundId);
+      const targets = m ? memberCounts.find((c) => c.groupId === m.groupId)?.count ?? 0 : 0;
+      return {
+        ...r,
+        myGroup: m ? { id: m.groupId, name: m.groupName } : null,
+        contractPending: !!m?.contractText && !m.contractAcceptedAt,
+        mySubmission: sub ? { status: sub.status, submittedAt: sub.submittedAt } : null,
+        progress: {
+          answered: sub ? answered.find((a) => a.submissionId === sub.id)?.count ?? 0 : 0,
+          total: questionCount * targets,
+        },
+      };
+    });
+    res.json({ msg: "Fetch assignments successfully", data });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // GET /rounds?courseId= — รอบทั้งหมดของวิชา (อาจารย์ได้ความคืบหน้าการส่งด้วย)
 router.get(

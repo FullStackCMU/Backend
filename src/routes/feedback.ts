@@ -1,190 +1,246 @@
 import { dbClient } from "@db/client.js";
 import {
-  answersTable,
-  feedbackSummariesTable,
+  coursesTable,
+  enrollmentsTable,
+  groupMembersTable,
+  groupsTable,
   questionsTable,
+  ratingsTable,
   roundsTable,
-  usersTable,
+  submissionsTable,
 } from "@db/schema.js";
-import { and, eq } from "drizzle-orm";
-import { Router } from "express";
+import { and, asc, eq, inArray, isNull, lte, ne, or } from "drizzle-orm";
+import { randomInt } from "node:crypto";
+import { Router, type Request } from "express";
 import {
   authenticate,
-  requireInstructor,
+  requireCourseRole,
   type AuthedRequest,
 } from "../middlewares/auth.middleware.ts";
 
+// ผลประเมินของนักศึกษา — เปิดให้ดูตาม release ของอาจารย์ (บังคับที่ API ไม่ใช่แค่ซ่อนที่หน้าเว็บ)
+// ห้ามส่ง evaluator_id / submission id ของคนอื่นออกไปเด็ดขาด
 const router = Router();
 
-// GET /feedback/raw/:roundId?groupId= — อาจารย์อ่านคำตอบดิบทั้งหมด
-router.get(
-  "/raw/:roundId",
-  authenticate,
-  requireInstructor,
-  async (req, res, next) => {
-    try {
-      const roundId = String(req.params.roundId);
-      const groupId = String(req.query.groupId ?? "");
-      if (!groupId) throw new Error("groupId is required");
+function httpError(status: number, message: string) {
+  const err: any = new Error(message);
+  err.statusCode = status;
+  return err;
+}
 
-      const results = await dbClient
-        .select({
-          answerId: answersTable.id,
-          questionId: questionsTable.id,
-          questionContent: questionsTable.content,
-          questionType: questionsTable.type,
-          sortOrder: questionsTable.sortOrder,
-          scoreValue: answersTable.scoreValue,
-          textValue: answersTable.textValue,
-          evaluatorId: answersTable.evaluatorId,
-          evaluateeId: answersTable.evaluateeId,
-          evaluateeName: usersTable.name,
-          createdAt: answersTable.createdAt,
-        })
-        .from(answersTable)
-        .innerJoin(
-          questionsTable,
-          eq(questionsTable.id, answersTable.questionId)
+const isReleased = (at: Date | null, now: Date) => at !== null && at <= now;
+
+/** สลับลำดับแบบสุ่ม (Fisher–Yates) — ความเห็นต้องไม่เรียงตามคนเขียน */
+function shuffle<T>(items: T[]) {
+  const a = [...items];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+const round1 = (n: number) => Math.round(n * 10) / 10;
+
+// GET /feedback — รอบที่ดูผลได้แล้ว จากทุกวิชาที่เป็นนักศึกษา (ใหม่สุดก่อน)
+router.get("/", authenticate, async (req: AuthedRequest, res, next) => {
+  try {
+    const now = new Date();
+    const rows = await dbClient
+      .select({
+        roundId: roundsTable.id,
+        sequenceNo: roundsTable.sequenceNo,
+        scoresReleasedAt: roundsTable.scoresReleasedAt,
+        feedbackReleasedAt: roundsTable.feedbackReleasedAt,
+        courseId: coursesTable.id,
+        courseCode: coursesTable.courseCode,
+        section: coursesTable.section,
+        courseTitle: coursesTable.title,
+      })
+      .from(enrollmentsTable)
+      .innerJoin(coursesTable, eq(coursesTable.id, enrollmentsTable.courseId))
+      .innerJoin(roundsTable, eq(roundsTable.courseId, coursesTable.id))
+      .where(
+        and(
+          eq(enrollmentsTable.userId, req.user!.id),
+          eq(enrollmentsTable.role, "student"),
+          or(lte(roundsTable.scoresReleasedAt, now), lte(roundsTable.feedbackReleasedAt, now))
         )
-        .innerJoin(usersTable, eq(usersTable.id, answersTable.evaluateeId))
+      );
+
+    const data = rows
+      .map((r) => ({
+        ...r,
+        releasedAt: [r.scoresReleasedAt, r.feedbackReleasedAt]
+          .filter((d): d is Date => d !== null && d <= now)
+          .reduce((a, b) => (b > a ? b : a)),
+      }))
+      .sort((a, b) => b.releasedAt.getTime() - a.releasedAt.getTime());
+
+    res.json({ msg: "Fetch feedback list successfully", data });
+  } catch (err) {
+    next(err);
+  }
+});
+
+async function findRound(roundId: string) {
+  const [round] = await dbClient.select().from(roundsTable).where(eq(roundsTable.id, roundId));
+  if (!round) throw httpError(404, "ไม่พบรอบประเมินนี้");
+  return round;
+}
+const courseIdOfRound = async (req: Request) => (await findRound(String(req.params.roundId))).courseId;
+
+// GET /feedback/rounds/:roundId — ผลประเมินของฉันในรอบนี้
+//   scores   (มีเมื่อ scores_released_at ถึงแล้ว): ค่าเฉลี่ยจากเพื่อนรายข้อ เทียบกับคะแนนที่ให้ตัวเอง
+//   comments (มีเมื่อ feedback_released_at ถึงแล้ว): ความเห็นจากเพื่อน ไม่ระบุชื่อ สลับลำดับ
+//   ยังไม่ release → เป็น null (หน้าเว็บแสดงว่ารออาจารย์เผยแพร่)
+router.get(
+  "/rounds/:roundId",
+  authenticate,
+  requireCourseRole("student", courseIdOfRound),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const userId = req.user!.id;
+      const now = new Date();
+      const round = await findRound(String(req.params.roundId));
+      const [course] = await dbClient
+        .select({
+          id: coursesTable.id,
+          courseCode: coursesTable.courseCode,
+          section: coursesTable.section,
+          title: coursesTable.title,
+        })
+        .from(coursesTable)
+        .where(eq(coursesTable.id, round.courseId));
+
+      const [mine] = await dbClient
+        .select({
+          groupId: submissionsTable.groupId,
+          status: submissionsTable.status,
+          submittedAt: submissionsTable.submittedAt,
+        })
+        .from(submissionsTable)
+        .where(and(eq(submissionsTable.roundId, round.id), eq(submissionsTable.evaluatorId, userId)));
+
+      // คะแนน/ความเห็นที่ "เพื่อน" ให้ฉัน จาก submission ที่ส่งแล้วเท่านั้น
+      // evaluatorId ใช้นับจำนวนคนภายใน server เท่านั้น — ไม่ส่งออก
+      const received = await dbClient
+        .select({
+          evaluatorId: submissionsTable.evaluatorId,
+          groupId: submissionsTable.groupId,
+          questionId: ratingsTable.questionId,
+          score: ratingsTable.score,
+          comment: ratingsTable.comment,
+        })
+        .from(ratingsTable)
+        .innerJoin(submissionsTable, eq(submissionsTable.id, ratingsTable.submissionId))
         .where(
           and(
-            eq(questionsTable.roundId, roundId),
-            eq(answersTable.groupId, groupId)
+            eq(submissionsTable.roundId, round.id),
+            eq(submissionsTable.status, "submitted"),
+            eq(ratingsTable.evaluateeId, userId),
+            ne(submissionsTable.evaluatorId, userId)
           )
         );
 
-      res.json({ msg: "Fetch raw answers successfully", data: results });
-    } catch (err) {
-      next(err);
-    }
-  }
-);
+      // กลุ่มของรอบนี้: จาก submission ของตัวเอง → กลุ่มของเพื่อนที่ประเมินฉัน → กลุ่มปัจจุบัน
+      const [current] =
+        mine || received.length
+          ? []
+          : await dbClient
+              .select({ groupId: groupMembersTable.groupId })
+              .from(groupMembersTable)
+              .where(
+                and(
+                  eq(groupMembersTable.courseId, round.courseId),
+                  eq(groupMembersTable.userId, userId),
+                  isNull(groupMembersTable.leftAt)
+                )
+              );
+      const groupId = mine?.groupId ?? received[0]?.groupId ?? current?.groupId ?? null;
+      const [group] = groupId
+        ? await dbClient.select({ name: groupsTable.name }).from(groupsTable).where(eq(groupsTable.id, groupId))
+        : [];
 
-// POST /feedback — อาจารย์เขียน/แก้สรุป
-router.post(
-  "/",
-  authenticate,
-  requireInstructor,
-  async (req: AuthedRequest, res, next) => {
-    try {
-      const instructorId = req.user!.id;
-      const roundId = req.body.roundId ?? "";
-      const studentId = req.body.studentId ?? "";
-      const summary = req.body.summary ?? "";
-      const isPublished = req.body.isPublished ?? false;
+      const questions = await dbClient.select().from(questionsTable).orderBy(asc(questionsTable.orderNo));
 
-      if (!roundId || !studentId || !summary)
-        throw new Error("roundId, studentId and summary are required");
-      if (typeof isPublished !== "boolean")
-        throw new Error("isPublished must be a boolean");
+      const scoresReleased = isReleased(round.scoresReleasedAt, now);
+      const feedbackReleased = isReleased(round.feedbackReleasedAt, now);
 
-      const [result] = await dbClient
-        .insert(feedbackSummariesTable)
-        .values({ roundId, studentId, instructorId, summary, isPublished })
-        .onConflictDoUpdate({
-          target: [feedbackSummariesTable.roundId, feedbackSummariesTable.studentId],
-          set: { summary, isPublished, instructorId },
-        })
-        .returning();
+      let scores = null;
+      if (scoresReleased) {
+        // คะแนนที่ฉันให้ตัวเอง (เฉพาะที่ส่งแล้ว)
+        const selfRatings =
+          mine?.status === "submitted"
+            ? await dbClient
+                .select({ questionId: ratingsTable.questionId, score: ratingsTable.score })
+                .from(ratingsTable)
+                .innerJoin(submissionsTable, eq(submissionsTable.id, ratingsTable.submissionId))
+                .where(
+                  and(
+                    eq(submissionsTable.roundId, round.id),
+                    eq(submissionsTable.evaluatorId, userId),
+                    eq(ratingsTable.evaluateeId, userId),
+                    inArray(ratingsTable.questionId, questions.map((q) => q.id))
+                  )
+                )
+            : [];
 
-      res.json({ msg: "Upsert feedback successfully", data: result });
-    } catch (err) {
-      next(err);
-    }
-  }
-);
+        scores = questions
+          .filter((q) => q.type === "rating")
+          .map((q) => {
+            const peer = received.filter((r) => r.questionId === q.id && r.score !== null).map((r) => r.score!);
+            const self = selfRatings.find((r) => r.questionId === q.id)?.score ?? null;
+            return {
+              questionId: q.id,
+              orderNo: q.orderNo,
+              prompt: q.prompt,
+              peerAverage: peer.length ? round1(peer.reduce((a, b) => a + b, 0) / peer.length) : null,
+              peerCount: peer.length,
+              selfScore: self,
+            };
+          });
+      }
 
-// PATCH /feedback/:id/publish
-router.patch(
-  "/:id/publish",
-  authenticate,
-  requireInstructor,
-  async (req, res, next) => {
-    try {
-      const id = String(req.params.id);
-      const isPublished = req.body.isPublished;
-      if (typeof isPublished !== "boolean")
-        throw new Error("isPublished must be a boolean");
-
-      const [updated] = await dbClient
-        .update(feedbackSummariesTable)
-        .set({ isPublished })
-        .where(eq(feedbackSummariesTable.id, id))
-        .returning();
-
-      if (!updated) throw new Error("Invalid id");
+      const comments = feedbackReleased
+        ? questions
+            .filter((q) => q.type === "text")
+            .map((q) => ({
+              questionId: q.id,
+              orderNo: q.orderNo,
+              prompt: q.prompt,
+              comments: shuffle(
+                received.filter((r) => r.questionId === q.id && r.comment?.trim()).map((r) => r.comment!)
+              ),
+            }))
+        : null;
 
       res.json({
-        msg: `Feedback ${isPublished ? "published" : "unpublished"}`,
-        data: updated,
+        msg: "Fetch feedback successfully",
+        data: {
+          round: {
+            id: round.id,
+            sequenceNo: round.sequenceNo,
+            opensAt: round.opensAt,
+            closesAt: round.closesAt,
+            scaleMin: round.scaleMin,
+            scaleMax: round.scaleMax,
+            scoresReleasedAt: scoresReleased ? round.scoresReleasedAt : null,
+            feedbackReleasedAt: feedbackReleased ? round.feedbackReleasedAt : null,
+          },
+          course,
+          groupName: group?.name ?? null,
+          mySubmission: mine ? { status: mine.status, submittedAt: mine.submittedAt } : null,
+          /** จำนวนเพื่อนที่ส่งแบบประเมินให้ฉัน */
+          peerCount: new Set(received.map((r) => r.evaluatorId)).size,
+          scores,
+          comments,
+        },
       });
     } catch (err) {
       next(err);
     }
   }
 );
-
-// GET /feedback/round/:roundId — อาจารย์ดูสรุปทั้งหมดในรอบ
-router.get(
-  "/round/:roundId",
-  authenticate,
-  requireInstructor,
-  async (req, res, next) => {
-    try {
-      const roundId = String(req.params.roundId);
-
-      const results = await dbClient
-        .select({
-          id: feedbackSummariesTable.id,
-          studentId: feedbackSummariesTable.studentId,
-          studentName: usersTable.name,
-          summary: feedbackSummariesTable.summary,
-          isPublished: feedbackSummariesTable.isPublished,
-          createdAt: feedbackSummariesTable.createdAt,
-        })
-        .from(feedbackSummariesTable)
-        .innerJoin(
-          usersTable,
-          eq(usersTable.id, feedbackSummariesTable.studentId)
-        )
-        .where(eq(feedbackSummariesTable.roundId, roundId));
-
-      res.json({ msg: "Fetch summaries successfully", data: results });
-    } catch (err) {
-      next(err);
-    }
-  }
-);
-
-/// GET /feedback/me — นักศึกษาดูฟีดแบ็กที่เผยแพร่แล้ว (พร้อมชื่อแบบประเมินและวิชา)
-router.get("/me", authenticate, async (req: AuthedRequest, res, next) => {
-  try {
-    const results = await dbClient
-      .select({
-        id: feedbackSummariesTable.id,
-        roundId: feedbackSummariesTable.roundId,
-        roundName: roundsTable.name,
-        courseId: roundsTable.courseId,
-        summary: feedbackSummariesTable.summary,
-        createdAt: feedbackSummariesTable.createdAt,
-      })
-      .from(feedbackSummariesTable)
-      .innerJoin(
-        roundsTable,
-        eq(roundsTable.id, feedbackSummariesTable.roundId)
-      )
-      .where(
-        and(
-          eq(feedbackSummariesTable.studentId, req.user!.id),
-          eq(feedbackSummariesTable.isPublished, true)
-        )
-      );
-
-    res.json({ msg: "Fetch your feedback successfully", data: results });
-  } catch (err) {
-    next(err);
-  }
-});
 
 export default router;
