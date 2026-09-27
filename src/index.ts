@@ -6,6 +6,7 @@ import express from "express";
 import helmet from "helmet";
 import morgan from "morgan";
 
+import answerRoute from "./routes/answer.ts";
 import authRoute from "./routes/auth.ts";
 import consentRoute from "./routes/consent.ts";
 import courseRoute from "./routes/course.ts";
@@ -14,7 +15,6 @@ import roundRoute from "./routes/round.ts";
 import userRoute from "./routes/user.ts";
 // TODO: route ด้านล่างยังใช้ schema เก่า (import ของที่ถูกลบไปแล้ว จะทำให้ server crash ตอนเริ่ม)
 // ปิดไว้ก่อนจนกว่าจะแก้ให้ตรง schema ใหม่
-// import answerRoute from "./routes/answer.js";
 // import feedbackRoute from "./routes/feedback.ts";
 
 
@@ -50,7 +50,7 @@ app.use("/users", userRoute);
 app.use("/courses", courseRoute);
 app.use("/groups", groupRoute);
 app.use("/rounds", roundRoute);
-// app.use("/answers", answerRoute);
+app.use("/answers", answerRoute);
 // app.use("/feedback", feedbackRoute);
 
 // ห้ามส่งข้อความดิบ stack ของ DB กลับ client เพราะเปิดเผยชื่อ table/column ภายใน
@@ -86,6 +86,9 @@ const jsonErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
     message,
     type: isDbError ? "Error" : err.name || "Error",
   };
+
+  // รายการปัญหารายข้อ (เช่น ข้อความที่ AI flagger ให้แก้ก่อนส่ง)
+  if (Array.isArray(err.issues)) errorResponse.issues = err.issues;
 
   if (process.env.NODE_ENV === "development" && !isDbError) {
     errorResponse.stack = err.stack;
