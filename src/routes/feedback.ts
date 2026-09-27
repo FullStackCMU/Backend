@@ -2,6 +2,7 @@ import { dbClient } from "@db/client.js";
 import {
   coursesTable,
   enrollmentsTable,
+  flagsTable,
   groupMembersTable,
   groupsTable,
   questionsTable,
@@ -379,13 +380,65 @@ router.get(
       const evaluatorIds = [...new Set(received.map((r) => r.evaluatorId))].sort((a, b) =>
         a === studentId ? -1 : b === studentId ? 1 : 0
       );
+      // คำเตือนจาก AI ในรอบนี้ ทั้งที่นักศึกษาคนนี้เขียน และที่คนอื่นเขียนถึงนักศึกษาคนนี้
+      const flags = await dbClient
+        .select({
+          evaluatorId: submissionsTable.evaluatorId,
+          evaluateeId: flagsTable.evaluateeId,
+          questionId: flagsTable.questionId,
+          category: flagsTable.category,
+          severity: flagsTable.severity,
+          studentAction: flagsTable.studentAction,
+          createdAt: flagsTable.createdAt,
+        })
+        .from(flagsTable)
+        .innerJoin(submissionsTable, eq(submissionsTable.id, flagsTable.submissionId))
+        .where(
+          and(
+            eq(submissionsTable.roundId, round.id),
+            or(eq(submissionsTable.evaluatorId, studentId), eq(flagsTable.evaluateeId, studentId))
+          )
+        )
+        .orderBy(asc(flagsTable.createdAt));
+
+      const written = flags.filter((f) => f.evaluatorId === studentId);
+      const questionNo = new Map(questions.map((q) => [q.id, q.orderNo]));
+      const count = (action: string) => written.filter((f) => f.studentAction === action).length;
+      const writtenFlags = {
+        total: written.length,
+        edited: count("edited"),
+        ignored: count("ignored"),
+        pending: count("pending"),
+        items: written.map((f) => ({
+          questionNo: questionNo.get(f.questionId) ?? null,
+          evaluateeName: f.evaluateeId ? (names.get(f.evaluateeId) ?? null) : null,
+          isSelf: f.evaluateeId === studentId,
+          category: f.category,
+          severity: f.severity,
+          studentAction: f.studentAction,
+        })),
+      };
+
       const evaluations = evaluatorIds.map((id) => {
         const rows = received.filter((r) => r.evaluatorId === id);
         return {
           evaluator: { id, name: names.get(id) ?? "(ไม่อยู่ในวิชาแล้ว)", isSelf: id === studentId },
           answers: questions.map((q) => {
             const r = rows.find((x) => x.questionId === q.id);
-            return { questionId: q.id, score: r?.score ?? null, comment: r?.comment ?? null };
+            // ผู้เขียนถูกเตือนแล้วเลือก "ส่งตามนี้" — ข้อความที่แสดงคือข้อความที่ถูกเตือน
+            const ignored = flags.find(
+              (f) =>
+                f.evaluatorId === id &&
+                f.evaluateeId === studentId &&
+                f.questionId === q.id &&
+                f.studentAction === "ignored"
+            );
+            return {
+              questionId: q.id,
+              score: r?.score ?? null,
+              comment: r?.comment ?? null,
+              ignoredWarning: ignored?.category ?? null,
+            };
           }),
         };
       });
@@ -397,6 +450,7 @@ router.get(
           questions: questions.map((q) => ({ id: q.id, orderNo: q.orderNo, type: q.type, prompt: q.prompt })),
           scale: { min: round.scaleMin, max: round.scaleMax },
           evaluations,
+          writtenFlags,
         },
       });
     } catch (err) {

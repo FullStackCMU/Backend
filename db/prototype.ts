@@ -17,7 +17,7 @@ const DAY = 24 * 60 * 60 * 1000;
 const daysFromNow = (n: number) => new Date(Date.now() + n * DAY);
 
 // ต้องตรงกับ Backend/src/config.ts (CONSENT_POLICY_VERSION)
-const CONSENT_POLICY_VERSION = "2026-09-v2";
+const CONSENT_POLICY_VERSION = "2026-09-v3";
 
 // ลบตามลำดับ dependency (ลูกก่อนแม่)
 async function resetAll() {

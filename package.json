@@ -10,7 +10,8 @@
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",
-    "db:prototype": "tsx ./db/prototype.ts"
+    "db:prototype": "tsx ./db/prototype.ts",
+    "eval:comments": "tsx ./scripts/comment-check-eval.ts"
   },
   "keywords": [],
   "author": "",
@@ -34,10 +35,12 @@
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.11.0",
+    "openai": "^7.23.0",
     "postgres": "^3.4.9",
     "tsc-alias": "^1.8.17",
     "tsx": "^4.22.4",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

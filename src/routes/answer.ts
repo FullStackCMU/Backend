@@ -12,7 +12,13 @@ import {
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { Router, type Request } from "express";
 import { CONSENT_POLICY_VERSION } from "../config.ts";
-import { checkComments } from "../lib/comment-check.ts";
+import {
+  checkComments,
+  markIgnored,
+  nameVariants,
+  toWarnings,
+  type CommentWarning,
+} from "../lib/comment-check/index.ts";
 import { personColumns, toPerson } from "../lib/course-members.ts";
 import {
   authenticate,
@@ -125,12 +131,12 @@ async function loadContext(roundId: string, userId: string) {
   else if (group.contractText && !membership.contractAcceptedAt)
     blocker = { status: 409, message: "ต้องยอมรับข้อตกลงกลุ่มก่อนจึงทำแบบประเมินได้" };
 
-  return { round, submission, group: group ?? null, targets, questions, answers, blocker };
+  return { round, submission, group: group ?? null, members, targets, questions, answers, blocker };
 }
 
 type Context = Awaited<ReturnType<typeof loadContext>>;
 
-function toResponse(ctx: Context) {
+function toResponse(ctx: Context, warnings: CommentWarning[] = []) {
   return {
     round: {
       id: ctx.round.id,
@@ -150,6 +156,8 @@ function toResponse(ctx: Context) {
     answers: ctx.answers,
     /** null = บันทึก/ส่งได้ */
     blocker: ctx.blocker?.message ?? null,
+    /** คำเตือนจาก AI ของความเห็นที่ตรวจในคำขอนี้ */
+    warnings,
   };
 }
 
@@ -218,6 +226,23 @@ async function saveDraft(ctx: Context, userId: string, rows: AnswerRow[]) {
   });
 }
 
+/** ตรวจความเห็น (เฉพาะคำถามที่ระบุ ถ้าไม่ระบุ = ทุกข้อ) ด้วย AI — ชื่อสมาชิกกลุ่มถูกลบก่อนส่ง */
+function checkRows(ctx: Context, submissionId: string, rows: AnswerRow[], questionIds?: Set<string>) {
+  return checkComments({
+    submissionId,
+    comments: rows
+      .filter((r) => r.comment && (!questionIds || questionIds.has(r.questionId)))
+      .map((r) => ({ questionId: r.questionId, evaluateeId: r.evaluateeId, text: r.comment! })),
+    names: ctx.members.flatMap(nameVariants),
+  });
+}
+
+const warningKey = (w: { questionId: string; evaluateeId: string }) => `${w.questionId}:${w.evaluateeId}`;
+
+function stringList(input: unknown): string[] {
+  return Array.isArray(input) ? input.filter((x): x is string => typeof x === "string") : [];
+}
+
 const roundAccess = requireCourseRole("student", courseIdOfRound);
 
 // GET /answers/:roundId — ข้อมูลทำแบบประเมิน + คำตอบที่บันทึกไว้ + blocker (null = แก้ได้)
@@ -230,24 +255,30 @@ router.get("/:roundId", authenticate, roundAccess, async (req: AuthedRequest, re
   }
 });
 
-// PUT /answers/:roundId/draft { answers } — บันทึกร่าง (ตอบไม่ครบได้)
+// PUT /answers/:roundId/draft { answers, checkQuestionIds? } — บันทึกร่าง (ตอบไม่ครบได้)
+// checkQuestionIds: ตรวจความเห็นของคำถามเหล่านี้ด้วย AI แล้วคืน warnings (กด "ถัดไป" จากคำถาม text)
 router.put("/:roundId/draft", authenticate, roundAccess, async (req: AuthedRequest, res, next) => {
   try {
     const userId = req.user!.id;
     const ctx = await loadContext(String(req.params.roundId), userId);
     if (ctx.blocker) throw httpError(ctx.blocker.status, ctx.blocker.message);
 
-    await saveDraft(ctx, userId, parseAnswers(req.body?.answers, ctx));
+    const rows = parseAnswers(req.body?.answers, ctx);
+    const submissionId = await saveDraft(ctx, userId, rows);
+    const checkIds = new Set(stringList(req.body?.checkQuestionIds));
+    const warnings = checkIds.size > 0 ? toWarnings(await checkRows(ctx, submissionId, rows, checkIds)) : [];
     res.json({
       msg: "Save draft successfully",
-      data: toResponse(await loadContext(ctx.round.id, userId)),
+      data: toResponse(await loadContext(ctx.round.id, userId), warnings),
     });
   } catch (err) {
     next(err);
   }
 });
 
-// POST /answers/:roundId/submit { answers } — บันทึกแล้วส่ง (ต้องตอบครบทุกข้อ ทุกคน) ส่งแล้วแก้ไม่ได้
+// POST /answers/:roundId/submit { answers, acknowledged? } — บันทึกแล้วส่ง (ต้องตอบครบทุกข้อ ทุกคน) ส่งแล้วแก้ไม่ได้
+// AI เตือนความเห็นไหนที่ยังไม่อยู่ใน acknowledged ("questionId:evaluateeId" ที่นักศึกษากด "ส่งตามนี้")
+// → ยังไม่ส่ง คืน warnings ให้เลือกแก้หรือส่งตามนี้ (ตอบ 200 — เตือน ไม่ใช่ error)
 router.post("/:roundId/submit", authenticate, roundAccess, async (req: AuthedRequest, res, next) => {
   try {
     const userId = req.user!.id;
@@ -265,23 +296,24 @@ router.post("/:roundId/submit", authenticate, roundAccess, async (req: AuthedReq
 
     const submissionId = await saveDraft(ctx, userId, rows);
 
-    // ตรวจข้อความก่อนส่ง (AI flagger เสียบใน lib/comment-check.ts) — มีปัญหา = ยังไม่ส่ง ให้แก้ก่อน
-    const issues = await checkComments({
-      submissionId,
-      comments: rows
-        .filter((r) => r.comment)
-        .map((r) => ({ questionId: r.questionId, evaluateeId: r.evaluateeId, text: r.comment! })),
-    });
-    if (issues.length > 0) {
-      const err = httpError(422, "มีข้อความที่ควรปรับก่อนส่ง");
-      err.issues = issues;
-      throw err;
+    // ข้อความที่ตรวจไปแล้วตอนกด "ถัดไป" ได้ผลจาก cache ไม่ส่งให้ AI ซ้ำ
+    const warnings = toWarnings(await checkRows(ctx, submissionId, rows));
+    const acknowledged = new Set(stringList(req.body?.acknowledged));
+    if (warnings.some((w) => !acknowledged.has(warningKey(w)))) {
+      res.json({
+        msg: "Comments need review before submitting",
+        data: toResponse(await loadContext(ctx.round.id, userId), warnings),
+      });
+      return;
     }
 
-    await dbClient
-      .update(submissionsTable)
-      .set({ status: "submitted", submittedAt: new Date() })
-      .where(and(eq(submissionsTable.id, submissionId), eq(submissionsTable.status, "draft")));
+    await dbClient.transaction(async (tx) => {
+      await tx
+        .update(submissionsTable)
+        .set({ status: "submitted", submittedAt: new Date() })
+        .where(and(eq(submissionsTable.id, submissionId), eq(submissionsTable.status, "draft")));
+      await markIgnored(tx, submissionId, warnings);
+    });
 
     res.json({
       msg: "Submit evaluation successfully",

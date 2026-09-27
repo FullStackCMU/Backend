@@ -60,14 +60,15 @@ const PG_MESSAGE: Record<string, string> = {
 };
 
 const jsonErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
-  debug(err.message); // log ข้อความจริงไว้ฝั่ง server เสมอ
-
   const pgCode =
     (typeof err.code === "string" ? err.code : undefined) ??
     (err.cause && typeof err.cause.code === "string"
       ? err.cause.code
       : undefined);
   const isDbError = !!pgCode || err.name === "DrizzleQueryError";
+
+  // log ไว้ฝั่ง server — error ของ DB ห้าม log message เพราะ Drizzle แนบ params (ความเห็นในแบบประเมิน) มาด้วย
+  debug(isDbError ? `DB error ${pgCode ?? err.name} on ${req.method} ${req.path}` : err.message);
 
   let statusCode: number;
   let message: string;
@@ -84,9 +85,6 @@ const jsonErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
     message,
     type: isDbError ? "Error" : err.name || "Error",
   };
-
-  // รายการปัญหารายข้อ (เช่น ข้อความที่ AI flagger ให้แก้ก่อนส่ง)
-  if (Array.isArray(err.issues)) errorResponse.issues = err.issues;
 
   if (process.env.NODE_ENV === "development" && !isDbError) {
     errorResponse.stack = err.stack;
