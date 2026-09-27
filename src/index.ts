@@ -6,13 +6,15 @@ import express from "express";
 import helmet from "helmet";
 import morgan from "morgan";
 
-import answerRoute from "./routes/answer.js";
 import authRoute from "./routes/auth.ts";
-import courseRoute from "./routes/course.ts";
-import feedbackRoute from "./routes/feedback.ts";
-import groupRoute from "./routes/group.ts";
-import roundRoute from "./routes/round.ts";
 import userRoute from "./routes/user.ts";
+// TODO: route ด้านล่างยังใช้ schema เก่า (import ของที่ถูกลบไปแล้ว จะทำให้ server crash ตอนเริ่ม)
+// ปิดไว้ก่อนจนกว่าจะแก้ให้ตรง schema ใหม่
+// import answerRoute from "./routes/answer.js";
+// import courseRoute from "./routes/course.ts";
+// import feedbackRoute from "./routes/feedback.ts";
+// import groupRoute from "./routes/group.ts";
+// import roundRoute from "./routes/round.ts";
 
 
 const debug = Debug("pf-backend");
@@ -43,11 +45,11 @@ app.use(express.json());
 // Routes
 app.use("/auth", authRoute);
 app.use("/users", userRoute);
-app.use("/courses", courseRoute);
-app.use("/groups", groupRoute);
-app.use("/rounds", roundRoute);
-app.use("/answers", answerRoute);
-app.use("/feedback", feedbackRoute);
+// app.use("/courses", courseRoute);
+// app.use("/groups", groupRoute);
+// app.use("/rounds", roundRoute);
+// app.use("/answers", answerRoute);
+// app.use("/feedback", feedbackRoute);
 
 // ห้ามส่งข้อความดิบ stack ของ DB กลับ client เพราะเปิดเผยชื่อ table/column ภายใน
 const PG_MESSAGE: Record<string, string> = {

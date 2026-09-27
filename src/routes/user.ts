@@ -1,18 +1,22 @@
 import { dbClient } from "@db/client.js";
 import { usersTable } from "@db/schema.js";
 import { Router } from "express";
-import { authenticate, requireInstructor } from "../middlewares/auth.middleware.ts";
+import { authenticate, requireStaff } from "../middlewares/auth.middleware.ts";
 
 const router = Router();
 
-router.get("/", authenticate, requireInstructor, async (req, res, next) => {
+router.get("/", authenticate, requireStaff, async (req, res, next) => {
   try {
     const results = await dbClient
       .select({
         id: usersTable.id,
-        username: usersTable.username,
-        name: usersTable.name,
-        role: usersTable.role,
+        cmuAccount: usersTable.cmuAccount,
+        studentId: usersTable.studentId,
+        firstnameTh: usersTable.firstnameTh,
+        lastnameTh: usersTable.lastnameTh,
+        firstnameEn: usersTable.firstnameEn,
+        lastnameEn: usersTable.lastnameEn,
+        accountType: usersTable.accountType,
       })
       .from(usersTable);
 
