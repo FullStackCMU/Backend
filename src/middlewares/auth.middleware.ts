@@ -13,6 +13,10 @@ export type EnrollmentRole = (typeof enrollmentsTable.$inferSelect)["role"];
 
 export interface AuthedRequest extends Request {
   user?: typeof usersTable.$inferSelect;
+  /** ตั้งโดย requireCourseRole — วิชาที่ผ่านการเช็คสิทธิ์แล้ว */
+  courseId?: string;
+  /** ตั้งโดย requireCourseRole — role ของผู้ใช้ในวิชานั้น */
+  courseRole?: EnrollmentRole;
 }
 
 export function readCookie(header: string | undefined, name: string) {
@@ -81,32 +85,35 @@ function defaultCourseId(req: Request) {
 }
 
 // ต้องลงทะเบียนในวิชานั้นด้วย role ที่กำหนด (เช็คจาก enrollments)
+// getCourseId หา courseId จาก request — async ได้ (เช่น หาจาก groupId ใน DB)
 export function requireCourseRole(
-  role: EnrollmentRole,
-  getCourseId: (req: Request) => string | undefined = defaultCourseId
+  role: EnrollmentRole | EnrollmentRole[],
+  getCourseId: (req: Request) => string | undefined | Promise<string | undefined> = defaultCourseId
 ) {
+  const roles = Array.isArray(role) ? role : [role];
   return async (req: AuthedRequest, res: Response, next: NextFunction) => {
     try {
-      const courseId = getCourseId(req);
+      const courseId = await getCourseId(req);
       if (!courseId) throw new Error("courseId is required");
 
       const [enrollment] = await dbClient
-        .select({ id: enrollmentsTable.id })
+        .select({ role: enrollmentsTable.role })
         .from(enrollmentsTable)
         .where(
           and(
             eq(enrollmentsTable.courseId, courseId),
-            eq(enrollmentsTable.userId, req.user!.id),
-            eq(enrollmentsTable.role, role)
+            eq(enrollmentsTable.userId, req.user!.id)
           )
         );
 
-      if (!enrollment) {
+      if (!enrollment || !roles.includes(enrollment.role)) {
         return res.status(403).json({
-          message: `Only course ${role} can perform this action`,
+          message: `Only course ${roles.join("/")} can perform this action`,
           type: "Forbidden",
         });
       }
+      req.courseId = courseId;
+      req.courseRole = enrollment.role;
       next();
     } catch (err) {
       next(err);
