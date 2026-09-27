@@ -10,12 +10,12 @@ import authRoute from "./routes/auth.ts";
 import consentRoute from "./routes/consent.ts";
 import courseRoute from "./routes/course.ts";
 import groupRoute from "./routes/group.ts";
+import roundRoute from "./routes/round.ts";
 import userRoute from "./routes/user.ts";
 // TODO: route ด้านล่างยังใช้ schema เก่า (import ของที่ถูกลบไปแล้ว จะทำให้ server crash ตอนเริ่ม)
 // ปิดไว้ก่อนจนกว่าจะแก้ให้ตรง schema ใหม่
 // import answerRoute from "./routes/answer.js";
 // import feedbackRoute from "./routes/feedback.ts";
-// import roundRoute from "./routes/round.ts";
 
 
 const debug = Debug("pf-backend");
@@ -49,7 +49,7 @@ app.use("/consents", consentRoute);
 app.use("/users", userRoute);
 app.use("/courses", courseRoute);
 app.use("/groups", groupRoute);
-// app.use("/rounds", roundRoute);
+app.use("/rounds", roundRoute);
 // app.use("/answers", answerRoute);
 // app.use("/feedback", feedbackRoute);
 

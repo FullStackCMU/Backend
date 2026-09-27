@@ -2,12 +2,14 @@ import { dbClient } from "@db/client.js";
 import {
   coursesTable,
   enrollmentsTable,
+  groupMembersTable,
+  groupsTable,
   roundsTable,
   usersTable,
 } from "@db/schema.js";
 import { and, asc, count, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { Router } from "express";
-import { listCourseStudents } from "../lib/course-members.ts";
+import { displayName, listCourseStudents } from "../lib/course-members.ts";
 import {
   authenticate,
   requireCourseRole,
@@ -75,14 +77,45 @@ async function listCourseSummaries(userId: string, onlyCourseId?: string) {
     .from(roundsTable)
     .where(inArray(roundsTable.courseId, courseIds));
 
+  const instructors = await dbClient
+    .select({
+      courseId: enrollmentsTable.courseId,
+      firstnameTh: usersTable.firstnameTh,
+      lastnameTh: usersTable.lastnameTh,
+      firstnameEn: usersTable.firstnameEn,
+      lastnameEn: usersTable.lastnameEn,
+      cmuAccount: usersTable.cmuAccount,
+    })
+    .from(enrollmentsTable)
+    .innerJoin(usersTable, eq(usersTable.id, enrollmentsTable.userId))
+    .where(
+      and(inArray(enrollmentsTable.courseId, courseIds), eq(enrollmentsTable.role, "instructor"))
+    );
+
+  // กลุ่มปัจจุบันของผู้ใช้ในแต่ละวิชา (อาจารย์ไม่มี)
+  const myGroups = await dbClient
+    .select({ courseId: groupMembersTable.courseId, id: groupsTable.id, name: groupsTable.name })
+    .from(groupMembersTable)
+    .innerJoin(groupsTable, eq(groupsTable.id, groupMembersTable.groupId))
+    .where(
+      and(
+        inArray(groupMembersTable.courseId, courseIds),
+        eq(groupMembersTable.userId, userId),
+        isNull(groupMembersTable.leftAt)
+      )
+    );
+
   const now = new Date();
   return courses.map((c) => {
-    const round = pickCurrentRound(
-      rounds.filter((r) => r.courseId === c.id),
-      now
-    );
+    const courseRounds = rounds.filter((r) => r.courseId === c.id);
+    const round = pickCurrentRound(courseRounds, now);
+    const group = myGroups.find((g) => g.courseId === c.id);
     return {
       ...c,
+      instructors: instructors.filter((i) => i.courseId === c.id).map(displayName),
+      myGroup: group ? { id: group.id, name: group.name } : null,
+      roundCount: courseRounds.length,
+      openRoundCount: courseRounds.filter((r) => r.opensAt <= now && now < r.closesAt).length,
       studentCount: studentCounts.find((s) => s.courseId === c.id)?.count ?? 0,
       currentRound: round && {
         id: round.id,
@@ -171,7 +204,16 @@ router.post(
 
       res.json({
         msg: "Insert course successfully",
-        data: { ...course, role: "instructor", studentCount: 0, currentRound: null },
+        data: {
+          ...course,
+          role: "instructor",
+          instructors: [displayName(req.user!)],
+          myGroup: null,
+          roundCount: 0,
+          openRoundCount: 0,
+          studentCount: 0,
+          currentRound: null,
+        },
       });
     } catch (err) {
       next(err);
