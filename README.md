@@ -1,7 +1,8 @@
 # Setup
 
-- Make sure that you already have DB running from `pf-db` project.
-- Make `.env` from `.env.example` (fillin the password)
+- Use branch `full-backend` (not `pf-backend`)
+- Make sure that you already have DB running from `Database` project (branch `full-database`).
+- Make `.env` from `.env.example` (fillin the password, ask the team for `OAUTH_*`, set `AI_PROVIDER=none` if you don't have a DeepSeek key)
 - `pnpm install`
 - `pnpm run dev`
 
