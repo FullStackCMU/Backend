@@ -10,7 +10,8 @@
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",
-    "db:prototype": "tsx ./db/prototype.ts"
+    "db:prototype": "tsx ./db/prototype.ts",
+    "eval:comments": "tsx ./scripts/comment-check-eval.ts"
   },
   "keywords": [],
   "author": "",
@@ -26,7 +27,6 @@
   "dependencies": {
     "@tsconfig/node-lts": "^24.0.0",
     "@tsconfig/node-ts": "^23.6.4",
-    "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "debug": "^4.4.3",
     "dotenv": "^17.4.2",
@@ -35,20 +35,20 @@
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.11.0",
+    "openai": "^7.23.0",
     "postgres": "^3.4.9",
     "tsc-alias": "^1.8.17",
     "tsx": "^4.22.4",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^3.0.0",
     "@types/cors": "^2.8.19",
     "@types/debug": "^4.1.13",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/morgan": "^1.9.10",
     "@types/node": "^26.0.1",
-    "cross-env": "^10.1.0",
     "drizzle-kit": "^0.31.10",
     "nodemon": "^3.1.14"
   }

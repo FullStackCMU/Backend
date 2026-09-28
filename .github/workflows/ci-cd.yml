@@ -1,7 +1,7 @@
 name: CI/CD
 
 # push branch ไหนก็รัน CI (typecheck/build) เห็นผลได้เลยระหว่างทำงาน
-# แต่ build+push image ขึ้น Docker Hub เฉพาะตอนอยู่ main (หลัง PR merge) เท่านั้น
+# push image ขึ้น Docker Hub เฉพาะบน main และตั้ง repository variable PUSH_IMAGE=true แล้วเท่านั้น
 on:
   push:
   workflow_dispatch: # กดรันเองได้จากหน้า Actions
@@ -31,18 +31,17 @@ jobs:
       - name: Build (typecheck)
         run: pnpm run build
 
-      # login เฉพาะตอนอยู่ main (ตอนที่จะ push image จริง)
       - name: Login to Docker Hub
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && vars.PUSH_IMAGE == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # build image เสมอ (เช็คว่า Dockerfile build ผ่าน) แต่ push เฉพาะ main
+      # build image เสมอเพื่อเช็คว่า Dockerfile build ผ่าน
       - name: Build & push image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.ref == 'refs/heads/main' }}
+          push: ${{ github.ref == 'refs/heads/main' && vars.PUSH_IMAGE == 'true' }}
           tags: xielnwza/preflight-backend:latest

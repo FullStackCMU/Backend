@@ -1,157 +1,426 @@
 import { dbClient } from "@db/client.js";
-import { groupMembersTable, groupsTable, usersTable } from "@db/schema.js";
-import { and, eq } from "drizzle-orm";
-import { Router } from "express";
+import {
+  groupMembersTable,
+  groupsTable,
+  roundsTable,
+  submissionsTable,
+  usersTable,
+} from "@db/schema.js";
+import { and, asc, count, eq, gt, isNull, lte, ne, sql } from "drizzle-orm";
+import { Router, type Request } from "express";
+import { listCourseStudents, personColumns, toPerson } from "../lib/course-members.ts";
 import {
   authenticate,
-  requireInstructor,
+  requireCourseRole,
   type AuthedRequest,
 } from "../middlewares/auth.middleware.ts";
 
 const router = Router();
 
-type GroupRow = {
-  id: string;
-  name: string;
-  section: string | null;
-  courseId: string;
-  members: { id: string; name: string; username: string }[];
-};
+const MAX_GROUP_SIZE = 50;
+const MAX_CONTRACT_LENGTH = 5000;
 
-// รวมผลลัพธ์จาก JOIN ให้เป็นกลุ่มพร้อม array สมาชิก
-function groupRows(
-  rows: {
-    groupId: string;
-    groupName: string;
-    section: string | null;
-    courseId: string;
-    memberId: string | null;
-    memberName: string | null;
-    memberUsername: string | null;
-  }[]
-): GroupRow[] {
-  const map: Record<string, GroupRow> = {};
-  rows.forEach((row) => {
-    if (!map[row.groupId]) {
-      map[row.groupId] = {
-        id: row.groupId,
-        name: row.groupName,
-        section: row.section,
-        courseId: row.courseId,
-        members: [],
-      };
-    }
-    if (row.memberId) {
-      map[row.groupId].members.push({
-        id: row.memberId,
-        name: row.memberName!,
-        username: row.memberUsername!,
-      });
-    }
-  });
-  return Object.values(map);
+async function listGroups(courseId: string, onlyGroupId?: string) {
+  const groups = await dbClient
+    .select({
+      id: groupsTable.id,
+      courseId: groupsTable.courseId,
+      name: groupsTable.name,
+      maxMembers: groupsTable.maxMembers,
+      contractText: groupsTable.contractText,
+      createdAt: groupsTable.createdAt,
+    })
+    .from(groupsTable)
+    .where(
+      and(
+        eq(groupsTable.courseId, courseId),
+        onlyGroupId ? eq(groupsTable.id, onlyGroupId) : undefined
+      )
+    )
+    .orderBy(asc(groupsTable.createdAt), asc(groupsTable.name));
+
+  const members = await dbClient
+    .select({
+      ...personColumns,
+      groupId: groupMembersTable.groupId,
+      joinedAt: groupMembersTable.joinedAt,
+      contractAcceptedAt: groupMembersTable.contractAcceptedAt,
+    })
+    .from(groupMembersTable)
+    .innerJoin(usersTable, eq(usersTable.id, groupMembersTable.userId))
+    .where(
+      and(
+        eq(groupMembersTable.courseId, courseId),
+        isNull(groupMembersTable.leftAt)
+      )
+    )
+    .orderBy(asc(groupMembersTable.joinedAt));
+
+  return groups.map((g) => ({
+    ...g,
+    members: members
+      .filter((m) => m.groupId === g.id)
+      .map((m) => ({
+        ...toPerson(m),
+        joinedAt: m.joinedAt,
+        contractAcceptedAt: m.contractAcceptedAt,
+      })),
+  }));
 }
 
-const groupSelect = {
-  groupId: groupsTable.id,
-  groupName: groupsTable.name,
-  section: groupsTable.section,
-  courseId: groupsTable.courseId,
-  memberId: usersTable.id,
-  memberName: usersTable.name,
-  memberUsername: usersTable.username,
-};
+// undefined = ไม่ได้ส่งมา (ไม่แก้)
+function parseGroupInput(body: Record<string, unknown>) {
+  const out: { name?: string; maxMembers?: number | null; contractText?: string | null } = {};
 
-// POST /groups — อาจารย์สร้างกลุ่ม + ใส่สมาชิก (transaction)
-router.post("/", authenticate, requireInstructor, async (req, res, next) => {
-  try {
-    const name = req.body.name ?? "";
-    const courseId = req.body.courseId ?? "";
-    const section = req.body.section ?? null;
-    const memberIds: string[] = req.body.memberIds ?? [];
+  if (body.name !== undefined) {
+    const name = String(body.name ?? "").trim();
+    if (!name) throw new Error("กรุณากรอกชื่อกลุ่ม");
+    if (name.length > 100) throw new Error("ชื่อกลุ่มยาวเกิน 100 ตัวอักษร");
+    out.name = name;
+  }
 
-    if (!name || !courseId) throw new Error("name and courseId are required");
+  if (body.maxMembers !== undefined) {
+    if (body.maxMembers === null || body.maxMembers === "") out.maxMembers = null;
+    else {
+      const n = Number(body.maxMembers);
+      if (!Number.isInteger(n) || n < 1 || n > MAX_GROUP_SIZE)
+        throw new Error(`จำนวนสมาชิกสูงสุดต้องเป็น 1–${MAX_GROUP_SIZE} คน หรือเว้นว่างถ้าไม่จำกัด`);
+      out.maxMembers = n;
+    }
+  }
 
-    const group = await dbClient.transaction(async (tx) => {
-      const [newGroup] = await tx
+  if (body.contractText !== undefined) {
+    const text = String(body.contractText ?? "").trim();
+    if (text.length > MAX_CONTRACT_LENGTH)
+      throw new Error(`ข้อตกลงกลุ่มยาวเกิน ${MAX_CONTRACT_LENGTH} ตัวอักษร`);
+    out.contractText = text || null;
+  }
+
+  return out;
+}
+
+async function assertUniqueName(courseId: string, name: string, exceptGroupId?: string) {
+  const [dup] = await dbClient
+    .select({ id: groupsTable.id })
+    .from(groupsTable)
+    .where(
+      and(
+        eq(groupsTable.courseId, courseId),
+        sql`lower(${groupsTable.name}) = lower(${name})`,
+        exceptGroupId ? ne(groupsTable.id, exceptGroupId) : undefined
+      )
+    );
+  if (dup) throw new Error("มีกลุ่มชื่อนี้ในวิชานี้แล้ว");
+}
+
+async function courseIdOfGroup(req: Request) {
+  const [group] = await dbClient
+    .select({ courseId: groupsTable.courseId })
+    .from(groupsTable)
+    .where(eq(groupsTable.id, String(req.params.groupId)));
+  if (!group) {
+    const err: any = new Error("ไม่พบกลุ่มนี้");
+    err.statusCode = 404;
+    throw err;
+  }
+  return group.courseId;
+}
+
+// นักศึกษาห้ามเห็นรหัส/อีเมลของเพื่อน
+function toStudentGroup(group: Awaited<ReturnType<typeof listGroups>>[number]) {
+  return {
+    id: group.id,
+    courseId: group.courseId,
+    name: group.name,
+    maxMembers: group.maxMembers,
+    contractText: group.contractText,
+    members: group.members.map((m) => ({
+      id: m.id,
+      name: m.name,
+      contractAcceptedAt: m.contractAcceptedAt,
+    })),
+  };
+}
+
+router.get(
+  "/",
+  authenticate,
+  requireCourseRole("instructor"),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const courseId = req.courseId!;
+      const [groups, students] = await Promise.all([
+        listGroups(courseId),
+        listCourseStudents(courseId),
+      ]);
+      res.json({
+        msg: "Fetch groups successfully",
+        data: {
+          groups,
+          unassigned: students.filter((s) => !s.group).map(({ group: _, ...s }) => s),
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+router.get(
+  "/my",
+  authenticate,
+  requireCourseRole("student"),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const [membership] = await dbClient
+        .select({ groupId: groupMembersTable.groupId })
+        .from(groupMembersTable)
+        .where(
+          and(
+            eq(groupMembersTable.courseId, req.courseId!),
+            eq(groupMembersTable.userId, req.user!.id),
+            isNull(groupMembersTable.leftAt)
+          )
+        );
+      const [group] = membership
+        ? await listGroups(req.courseId!, membership.groupId)
+        : [];
+      res.json({ msg: "Fetch my group successfully", data: group ? toStudentGroup(group) : null });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+router.post(
+  "/",
+  authenticate,
+  requireCourseRole("instructor"),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const courseId = req.courseId!;
+      const input = parseGroupInput({
+        name: req.body.name ?? "",
+        maxMembers: req.body.maxMembers ?? null,
+      });
+      await assertUniqueName(courseId, input.name!);
+
+      const [created] = await dbClient
         .insert(groupsTable)
-        .values({ name, courseId, section })
-        .returning();
+        .values({ courseId, name: input.name!, maxMembers: input.maxMembers })
+        .returning({ id: groupsTable.id });
 
-      if (memberIds.length > 0) {
+      const [group] = await listGroups(courseId, created.id);
+      res.json({ msg: "Insert group successfully", data: group });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+router.patch(
+  "/:groupId",
+  authenticate,
+  requireCourseRole("instructor", courseIdOfGroup),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const courseId = req.courseId!;
+      const groupId = String(req.params.groupId);
+      const input = parseGroupInput(req.body ?? {});
+      if (Object.keys(input).length === 0) throw new Error("ไม่มีข้อมูลที่ต้องแก้ไข");
+
+      if (input.name !== undefined) await assertUniqueName(courseId, input.name, groupId);
+
+      const [current] = await listGroups(courseId, groupId);
+      if (input.maxMembers != null && current.members.length > input.maxMembers)
+        throw new Error(
+          `กลุ่มนี้มีสมาชิก ${current.members.length} คนแล้ว ตั้งจำนวนสูงสุดให้น้อยกว่านี้ไม่ได้`
+        );
+
+      // ข้อตกลงเปลี่ยน → ทุกคนในกลุ่มต้องยอมรับใหม่
+      const contractChanged =
+        input.contractText !== undefined && input.contractText !== current.contractText;
+
+      await dbClient.transaction(async (tx) => {
+        await tx.update(groupsTable).set(input).where(eq(groupsTable.id, groupId));
+        if (contractChanged)
+          await tx
+            .update(groupMembersTable)
+            .set({ contractAcceptedAt: null })
+            .where(eq(groupMembersTable.groupId, groupId));
+      });
+
+      const [group] = await listGroups(courseId, groupId);
+      res.json({ msg: "Update group successfully", data: group });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+type Tx = Parameters<Parameters<typeof dbClient.transaction>[0]>[0];
+
+function httpError(status: number, message: string) {
+  const err: any = new Error(message);
+  err.statusCode = status;
+  return err;
+}
+
+async function findActiveMembership(db: Tx | typeof dbClient, courseId: string, userId: string) {
+  const [membership] = await db
+    .select({ id: groupMembersTable.id, groupId: groupMembersTable.groupId })
+    .from(groupMembersTable)
+    .where(
+      and(
+        eq(groupMembersTable.courseId, courseId),
+        eq(groupMembersTable.userId, userId),
+        isNull(groupMembersTable.leftAt)
+      )
+    );
+  return membership;
+}
+
+// submission ผูกกับกลุ่ม — ห้ามเปลี่ยนกลุ่มระหว่างรอบที่เริ่มทำแล้ว
+async function assertTeamChangeAllowed(db: Tx | typeof dbClient, courseId: string, userId: string) {
+  const now = new Date();
+  const [locked] = await db
+    .select({ sequenceNo: roundsTable.sequenceNo })
+    .from(submissionsTable)
+    .innerJoin(roundsTable, eq(roundsTable.id, submissionsTable.roundId))
+    .where(
+      and(
+        eq(roundsTable.courseId, courseId),
+        eq(submissionsTable.evaluatorId, userId),
+        lte(roundsTable.opensAt, now),
+        gt(roundsTable.closesAt, now)
+      )
+    )
+    .limit(1);
+  if (locked)
+    throw httpError(
+      409,
+      `คุณเริ่มทำแบบประเมินรอบที่ ${locked.sequenceNo} แล้ว เปลี่ยนกลุ่มได้หลังรอบนี้ปิดรับ`
+    );
+}
+
+router.get(
+  "/available",
+  authenticate,
+  requireCourseRole("student"),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const groups = await listGroups(req.courseId!);
+      res.json({
+        msg: "Fetch groups successfully",
+        data: groups.map((g) => ({
+          id: g.id,
+          name: g.name,
+          maxMembers: g.maxMembers,
+          contractText: g.contractText,
+          members: g.members.map((m) => ({ id: m.id, name: m.name })),
+        })),
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+router.post(
+  "/:groupId/join",
+  authenticate,
+  requireCourseRole("student", courseIdOfGroup),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const courseId = req.courseId!;
+      const userId = req.user!.id;
+      const groupId = String(req.params.groupId);
+
+      await dbClient.transaction(async (tx) => {
+        // FOR UPDATE กันสองคนเข้าที่นั่งสุดท้ายพร้อมกัน
+        const [group] = await tx
+          .select({ maxMembers: groupsTable.maxMembers })
+          .from(groupsTable)
+          .where(eq(groupsTable.id, groupId))
+          .for("update");
+
+        if (await findActiveMembership(tx, courseId, userId))
+          throw httpError(409, "คุณมีกลุ่มในวิชานี้แล้ว ออกจากกลุ่มเดิมก่อน");
+        await assertTeamChangeAllowed(tx, courseId, userId);
+
+        if (group.maxMembers !== null) {
+          const [{ members }] = await tx
+            .select({ members: count() })
+            .from(groupMembersTable)
+            .where(and(eq(groupMembersTable.groupId, groupId), isNull(groupMembersTable.leftAt)));
+          if (members >= group.maxMembers) throw httpError(409, "กลุ่มนี้เต็มแล้ว");
+        }
+
+        await tx.insert(groupMembersTable).values({ groupId, courseId, userId });
+      });
+
+      const [group] = await listGroups(courseId, groupId);
+      res.json({ msg: "Join group successfully", data: toStudentGroup(group) });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+router.post(
+  "/leave",
+  authenticate,
+  requireCourseRole("student"),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const courseId = req.courseId!;
+      const userId = req.user!.id;
+
+      await dbClient.transaction(async (tx) => {
+        const membership = await findActiveMembership(tx, courseId, userId);
+        if (!membership) throw httpError(409, "คุณยังไม่มีกลุ่มในวิชานี้");
+        await assertTeamChangeAllowed(tx, courseId, userId);
         await tx
-          .insert(groupMembersTable)
-          .values(memberIds.map((userId) => ({ groupId: newGroup.id, userId })));
-      }
+          .update(groupMembersTable)
+          .set({ leftAt: new Date() })
+          .where(eq(groupMembersTable.id, membership.id));
+      });
 
-      return newGroup;
-    });
-
-    res.json({ msg: "Insert group successfully", data: group });
-  } catch (err) {
-    next(err);
+      res.json({ msg: "Leave group successfully", data: null });
+    } catch (err) {
+      next(err);
+    }
   }
-});
+);
 
-// GET /groups/my?courseId=... — กลุ่มของฉันในวิชานั้น
-router.get("/my", authenticate, async (req: AuthedRequest, res, next) => {
-  try {
-    const courseId = String(req.query.courseId ?? "");
-    if (!courseId) throw new Error("courseId is required");
+router.post(
+  "/:groupId/accept-contract",
+  authenticate,
+  requireCourseRole("student", courseIdOfGroup),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const courseId = req.courseId!;
+      const groupId = String(req.params.groupId);
+      const membership = await findActiveMembership(dbClient, courseId, req.user!.id);
+      if (!membership || membership.groupId !== groupId)
+        throw httpError(403, "คุณไม่ได้อยู่ในกลุ่มนี้");
 
-    // หากลุ่มที่ฉันเป็นสมาชิกในวิชานี้ (single query)
-    const [mine] = await dbClient
-      .select({ groupId: groupMembersTable.groupId })
-      .from(groupMembersTable)
-      .innerJoin(groupsTable, eq(groupsTable.id, groupMembersTable.groupId))
-      .where(
-        and(
-          eq(groupMembersTable.userId, req.user!.id),
-          eq(groupsTable.courseId, courseId)
-        )
-      );
+      const [group] = await listGroups(courseId, groupId);
+      if (!group.contractText) throw new Error("กลุ่มนี้ยังไม่มีข้อตกลง");
 
-    if (!mine) return res.json({ msg: "No group found", data: null });
+      await dbClient
+        .update(groupMembersTable)
+        .set({ contractAcceptedAt: new Date() })
+        .where(
+          and(eq(groupMembersTable.id, membership.id), isNull(groupMembersTable.contractAcceptedAt))
+        );
 
-    const rows = await dbClient
-      .select(groupSelect)
-      .from(groupsTable)
-      .leftJoin(
-        groupMembersTable,
-        eq(groupMembersTable.groupId, groupsTable.id)
-      )
-      .leftJoin(usersTable, eq(usersTable.id, groupMembersTable.userId))
-      .where(eq(groupsTable.id, mine.groupId));
-
-    res.json({ msg: "Fetch my group successfully", data: groupRows(rows)[0] });
-  } catch (err) {
-    next(err);
+      const [updated] = await listGroups(courseId, groupId);
+      res.json({ msg: "Accept contract successfully", data: toStudentGroup(updated) });
+    } catch (err) {
+      next(err);
+    }
   }
-});
-
-// GET /groups?courseId=... — กลุ่มทั้งหมด — เฉพาะอาจารย์
-// นักศึกษาต้องใช้ /groups/my เท่านั้น กัน roster ข้ามวิชาทั้งระบบรั่ว
-router.get("/", authenticate, requireInstructor, async (req, res, next) => {
-  try {
-    const courseId = String(req.query.courseId ?? "");
-
-    const base = dbClient
-      .select(groupSelect)
-      .from(groupsTable)
-      .leftJoin(
-        groupMembersTable,
-        eq(groupMembersTable.groupId, groupsTable.id)
-      )
-      .leftJoin(usersTable, eq(usersTable.id, groupMembersTable.userId));
-
-    const rows = courseId
-      ? await base.where(eq(groupsTable.courseId, courseId))
-      : await base;
-
-    res.json({ msg: "Fetch groups successfully", data: groupRows(rows) });
-  } catch (err) {
-    next(err);
-  }
-});
+);
 
 export default router;

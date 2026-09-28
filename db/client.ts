@@ -5,4 +5,7 @@ import { connectionString } from "@db/utils.js";
 
 export const dbConn = postgres(connectionString);
 
-export const dbClient = drizzle(dbConn, { schema: schema, logger: true });
+// ห้าม log params — มีความเห็นในแบบประเมิน
+const logger = { logQuery: (query: string) => console.log(`Query: ${query}`) };
+
+export const dbClient = drizzle(dbConn, { schema: schema, logger });

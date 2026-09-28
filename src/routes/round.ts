@@ -1,182 +1,407 @@
 import { dbClient } from "@db/client.js";
-import { questionsTable, roundsTable } from "@db/schema.js";
-import { and, asc, eq } from "drizzle-orm";
-import { Router } from "express";
+import {
+  coursesTable,
+  enrollmentsTable,
+  groupMembersTable,
+  groupsTable,
+  questionsTable,
+  ratingsTable,
+  roundsTable,
+  submissionsTable,
+} from "@db/schema.js";
+import { and, asc, count, desc, eq, gt, inArray, isNull, lte } from "drizzle-orm";
+import { Router, type Request } from "express";
 import {
   authenticate,
-  requireInstructor,
+  requireCourseRole,
   type AuthedRequest,
 } from "../middlewares/auth.middleware.ts";
 
 const router = Router();
 
-// POST /rounds — อาจารย์สร้างแบบประเมิน
-router.post("/", authenticate, requireInstructor, async (req, res, next) => {
-  try {
-    const courseId = req.body.courseId ?? "";
-    const name = req.body.name ?? "";
-    const description = req.body.description ?? null;
-    const isOpen = req.body.isOpen ?? false;
+const DAY = 24 * 60 * 60 * 1000;
+const MAX_ROUNDS_PER_BATCH = 20;
+const MAX_INTERVAL_WEEKS = 8;
+// เวลาในฟอร์มกับเวลาที่กดส่งห่างกันได้นิดหน่อย
+const PAST_TOLERANCE = 5 * 60 * 1000;
+// เวลาไทย UTC+7 ไม่มี DST — ต้องตรงกับ endOfThaiDay ใน Frontend/src/lib/date.ts
+const THAI_OFFSET = 7 * 60 * 60 * 1000;
 
-    if (!courseId || !name) throw new Error("courseId and name are required");
-    if (typeof isOpen !== "boolean") throw new Error("isOpen must be a boolean");
+function endOfThaiDay(date: Date, addDays: number) {
+  const local = new Date(date.getTime() + THAI_OFFSET);
+  local.setUTCDate(local.getUTCDate() + addDays);
+  local.setUTCHours(23, 59, 0, 0);
+  return new Date(local.getTime() - THAI_OFFSET);
+}
 
-    const [round] = await dbClient
-      .insert(roundsTable)
-      .values({ courseId, name, description, isOpen })
-      .returning();
+type RoundRow = typeof roundsTable.$inferSelect;
 
-    res.json({ msg: "Insert round successfully", data: round });
-  } catch (err) {
-    next(err);
+function httpError(status: number, message: string) {
+  const err: any = new Error(message);
+  err.statusCode = status;
+  return err;
+}
+
+function parseDate(value: unknown, label: string) {
+  const d = new Date(String(value ?? ""));
+  if (Number.isNaN(d.getTime())) throw new Error(`${label}ไม่ถูกต้อง`);
+  return d;
+}
+
+function parseIntInRange(value: unknown, min: number, max: number, message: string) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < min || n > max) throw new Error(message);
+  return n;
+}
+
+async function findRound(roundId: string) {
+  const [round] = await dbClient.select().from(roundsTable).where(eq(roundsTable.id, roundId));
+  if (!round) throw httpError(404, "ไม่พบรอบประเมินนี้");
+  return round;
+}
+const courseIdOfRound = async (req: Request) =>
+  (await findRound(String(req.params.roundId))).courseId;
+
+const activeMembers = (courseId: string) =>
+  dbClient
+    .select({ userId: groupMembersTable.userId })
+    .from(groupMembersTable)
+    .where(and(eq(groupMembersTable.courseId, courseId), isNull(groupMembersTable.leftAt)));
+
+async function listRounds(courseId: string, viewer: { role: "instructor" } | { role: "student"; userId: string }) {
+  const rounds = await dbClient
+    .select()
+    .from(roundsTable)
+    .where(eq(roundsTable.courseId, courseId))
+    .orderBy(asc(roundsTable.sequenceNo));
+  if (rounds.length === 0) return rounds;
+  const roundIds = rounds.map((r) => r.id);
+
+  if (viewer.role === "student") {
+    const mine = await dbClient
+      .select({
+        roundId: submissionsTable.roundId,
+        status: submissionsTable.status,
+        submittedAt: submissionsTable.submittedAt,
+      })
+      .from(submissionsTable)
+      .where(and(inArray(submissionsTable.roundId, roundIds), eq(submissionsTable.evaluatorId, viewer.userId)));
+    return rounds.map((r) => {
+      const s = mine.find((m) => m.roundId === r.id);
+      return { ...r, mySubmission: s ? { status: s.status, submittedAt: s.submittedAt } : null };
+    });
   }
-});
 
-// GET /rounds?courseId=... — นักศึกษาเห็นเฉพาะปบบประเมินที่เปิด, อาจารย์เห็นทั้งหมด
-router.get("/", authenticate, async (req: AuthedRequest, res, next) => {
-  try {
-    const courseId = String(req.query.courseId ?? "");
-    if (!courseId) throw new Error("courseId is required");
+  const [{ studentCount }] = await dbClient
+    .select({ studentCount: count() })
+    .from(activeMembers(courseId).as("active"));
 
-    // นักศึกษาเห็นเฉพาะแบบประเมินที่เปิด
-    const isInstructor = req.user!.role === "instructor";
-    const rows = await dbClient
-      .select()
-      .from(roundsTable)
-      .where(
-        isInstructor
-          ? eq(roundsTable.courseId, courseId)
-          : and(
-            eq(roundsTable.courseId, courseId),
-            eq(roundsTable.isOpen, true)
-          )
+  const submitted = await dbClient
+    .select({ roundId: submissionsTable.roundId, count: count() })
+    .from(submissionsTable)
+    .where(
+      and(
+        inArray(submissionsTable.roundId, roundIds),
+        eq(submissionsTable.status, "submitted"),
+        inArray(submissionsTable.evaluatorId, activeMembers(courseId))
       )
-      .orderBy(asc(roundsTable.createdAt));
+    )
+    .groupBy(submissionsTable.roundId);
 
-    res.json({ msg: "Fetch rounds successfully", data: rows });
+  return rounds.map((r) => ({
+    ...r,
+    submittedCount: submitted.find((s) => s.roundId === r.id)?.count ?? 0,
+    studentCount,
+  }));
+}
+
+const INSTRUCTOR = { role: "instructor" } as const;
+
+router.get("/assignments", authenticate, async (req: AuthedRequest, res, next) => {
+  try {
+    const userId = req.user!.id;
+    const now = new Date();
+    const rounds = await dbClient
+      .select({
+        roundId: roundsTable.id,
+        sequenceNo: roundsTable.sequenceNo,
+        opensAt: roundsTable.opensAt,
+        closesAt: roundsTable.closesAt,
+        courseId: coursesTable.id,
+        courseCode: coursesTable.courseCode,
+        section: coursesTable.section,
+        courseTitle: coursesTable.title,
+      })
+      .from(enrollmentsTable)
+      .innerJoin(coursesTable, eq(coursesTable.id, enrollmentsTable.courseId))
+      .innerJoin(roundsTable, eq(roundsTable.courseId, coursesTable.id))
+      .where(
+        and(
+          eq(enrollmentsTable.userId, userId),
+          eq(enrollmentsTable.role, "student"),
+          lte(roundsTable.opensAt, now),
+          gt(roundsTable.closesAt, now)
+        )
+      )
+      .orderBy(asc(roundsTable.closesAt));
+    if (rounds.length === 0) return res.json({ msg: "Fetch assignments successfully", data: [] });
+
+    const courseIds = [...new Set(rounds.map((r) => r.courseId))];
+    const memberships = await dbClient
+      .select({
+        courseId: groupMembersTable.courseId,
+        groupId: groupsTable.id,
+        groupName: groupsTable.name,
+        contractText: groupsTable.contractText,
+        contractAcceptedAt: groupMembersTable.contractAcceptedAt,
+      })
+      .from(groupMembersTable)
+      .innerJoin(groupsTable, eq(groupsTable.id, groupMembersTable.groupId))
+      .where(
+        and(
+          inArray(groupMembersTable.courseId, courseIds),
+          eq(groupMembersTable.userId, userId),
+          isNull(groupMembersTable.leftAt)
+        )
+      );
+    const memberCounts = memberships.length
+      ? await dbClient
+          .select({ groupId: groupMembersTable.groupId, count: count() })
+          .from(groupMembersTable)
+          .where(
+            and(
+              inArray(groupMembersTable.groupId, memberships.map((m) => m.groupId)),
+              isNull(groupMembersTable.leftAt)
+            )
+          )
+          .groupBy(groupMembersTable.groupId)
+      : [];
+
+    const submissions = await dbClient
+      .select({
+        id: submissionsTable.id,
+        roundId: submissionsTable.roundId,
+        status: submissionsTable.status,
+        submittedAt: submissionsTable.submittedAt,
+      })
+      .from(submissionsTable)
+      .where(
+        and(
+          inArray(submissionsTable.roundId, rounds.map((r) => r.roundId)),
+          eq(submissionsTable.evaluatorId, userId)
+        )
+      );
+    const answered = submissions.length
+      ? await dbClient
+          .select({ submissionId: ratingsTable.submissionId, count: count() })
+          .from(ratingsTable)
+          .where(inArray(ratingsTable.submissionId, submissions.map((s) => s.id)))
+          .groupBy(ratingsTable.submissionId)
+      : [];
+    const [{ questionCount }] = await dbClient.select({ questionCount: count() }).from(questionsTable);
+
+    const data = rounds.map((r) => {
+      const m = memberships.find((x) => x.courseId === r.courseId);
+      const sub = submissions.find((s) => s.roundId === r.roundId);
+      const targets = m ? memberCounts.find((c) => c.groupId === m.groupId)?.count ?? 0 : 0;
+      return {
+        ...r,
+        myGroup: m ? { id: m.groupId, name: m.groupName } : null,
+        contractPending: !!m?.contractText && !m.contractAcceptedAt,
+        mySubmission: sub ? { status: sub.status, submittedAt: sub.submittedAt } : null,
+        progress: {
+          answered: sub ? answered.find((a) => a.submissionId === sub.id)?.count ?? 0 : 0,
+          total: questionCount * targets,
+        },
+      };
+    });
+    res.json({ msg: "Fetch assignments successfully", data });
   } catch (err) {
     next(err);
   }
 });
 
-// GET /rounds/:id/questions — ดึงคำถามในแบบประเมิน
 router.get(
-  "/:id/questions",
+  "/",
   authenticate,
+  requireCourseRole(["instructor", "student"]),
   async (req: AuthedRequest, res, next) => {
     try {
-      const roundId = String(req.params.id);
-
-      const [round] = await dbClient
-        .select()
-        .from(roundsTable)
-        .where(eq(roundsTable.id, roundId));
-      if (!round) throw new Error("Invalid id");
-
-      // นักศึกษาเห็นคำถามได้เฉพาะแบบประเมินที่เปิดอยู่ อาจารย์เห็นได้ทุกรอบ
-      if (!round.isOpen && req.user!.role !== "instructor") {
-        const err: any = new Error("แบบประเมินนี้ยังไม่เปิด");
-        err.statusCode = 403;
-        throw err;
-      }
-
-      const results = await dbClient
-        .select()
-        .from(questionsTable)
-        .where(eq(questionsTable.roundId, roundId))
-        .orderBy(asc(questionsTable.sortOrder));
-
-      res.json({ msg: "Fetch questions successfully", data: results });
+      const data = await listRounds(
+        req.courseId!,
+        req.courseRole === "instructor" ? INSTRUCTOR : { role: "student", userId: req.user!.id }
+      );
+      res.json({ msg: "Fetch rounds successfully", data });
     } catch (err) {
       next(err);
     }
   }
 );
 
-// POST /rounds/:id/questions — อาจารย์เพิ่มคำถาม (ทีละข้อหรือหลายข้อพร้อมกัน)
 router.post(
-  "/:id/questions",
+  "/generate",
   authenticate,
-  requireInstructor,
-  async (req, res, next) => {
+  requireCourseRole("instructor"),
+  async (req: AuthedRequest, res, next) => {
     try {
-      const roundId = String(req.params.id);
-      const items = Array.isArray(req.body) ? req.body : [req.body];
+      const courseId = req.courseId!;
+      const total = parseIntInRange(req.body.count, 1, MAX_ROUNDS_PER_BATCH, `จำนวนรอบต้องเป็น 1–${MAX_ROUNDS_PER_BATCH}`);
+      const intervalWeeks = parseIntInRange(req.body.intervalWeeks, 1, MAX_INTERVAL_WEEKS, `ความถี่ต้องเป็นทุก 1–${MAX_INTERVAL_WEEKS} สัปดาห์`);
+      const openDays = parseIntInRange(
+        req.body.openDays,
+        1,
+        intervalWeeks * 7,
+        `ระยะเปิดรับต้องเป็น 1–${intervalWeeks * 7} วัน (ไม่เกินระยะห่างระหว่างรอบ)`
+      );
+      const scaleMin = parseIntInRange(req.body.scaleMin, 0, 1, "คะแนนต่ำสุดต้องเป็น 0 หรือ 1");
+      const scaleMax = parseIntInRange(req.body.scaleMax, 3, 10, "คะแนนสูงสุดต้องเป็น 3–10");
+      const firstOpensAt = parseDate(req.body.firstOpensAt, "วันเปิดรอบแรก");
+      if (firstOpensAt.getTime() < Date.now() - PAST_TOLERANCE)
+        throw new Error("วันเปิดรอบแรกต้องเป็นเวลาในอนาคต");
 
-      const values = items.map((q, idx) => {
-        const content = q.content ?? "";
-        const type = q.type ?? "scale";
-        if (!content) throw new Error("content is required");
-        if (type !== "scale" && type !== "text")
-          throw new Error("type must be 'scale' or 'text'");
+      const [last] = await dbClient
+        .select()
+        .from(roundsTable)
+        .where(eq(roundsTable.courseId, courseId))
+        .orderBy(desc(roundsTable.sequenceNo))
+        .limit(1);
+      if (last && firstOpensAt < last.closesAt)
+        throw new Error(`รอบแรกต้องเปิดหลังรอบที่ ${last.sequenceNo} ปิดรับ`);
+
+      const startSeq = (last?.sequenceNo ?? 0) + 1;
+      const values = Array.from({ length: total }, (_, k) => {
+        const opensAt = new Date(firstOpensAt.getTime() + k * intervalWeeks * 7 * DAY);
         return {
-          roundId,
-          content,
-          type,
-          sortOrder: q.sortOrder ?? idx + 1,
+          courseId,
+          sequenceNo: startSeq + k,
+          opensAt,
+          closesAt: endOfThaiDay(opensAt, openDays - 1),
+          scaleMin,
+          scaleMax,
         };
       });
 
-      const results = await dbClient
-        .insert(questionsTable)
-        .values(values)
-        .returning();
-
-      res.json({ msg: "Insert questions successfully", data: results });
+      await dbClient.insert(roundsTable).values(values);
+      const data = await listRounds(courseId, INSTRUCTOR);
+      res.json({ msg: "Generate rounds successfully", data });
     } catch (err) {
       next(err);
     }
   }
 );
 
-// PATCH /rounds/:id/open — เปิด/ปิดแบบประเมิน
+// ลำดับเวลาต้องตรงกับเลขรอบ — ห้ามทับรอบก่อนหน้า/ถัดไป
 router.patch(
-  "/:id/open",
+  "/:roundId",
   authenticate,
-  requireInstructor,
-  async (req, res, next) => {
+  requireCourseRole("instructor", courseIdOfRound),
+  async (req: AuthedRequest, res, next) => {
     try {
-      const id = String(req.params.id);
-      const isOpen = req.body.isOpen;
+      const round = await findRound(String(req.params.roundId));
+      const now = new Date();
 
-      if (typeof isOpen !== "boolean")
-        throw new Error("isOpen must be a boolean");
+      if (round.scoresReleasedAt || round.feedbackReleasedAt)
+        throw new Error("รอบนี้เผยแพร่ผลแล้ว ยกเลิกการเผยแพร่ก่อนจึงแก้วันได้");
 
-      const [updated] = await dbClient
+      const opensAt = req.body.opensAt !== undefined ? parseDate(req.body.opensAt, "วันเปิดรับ") : round.opensAt;
+      const closesAt = req.body.closesAt !== undefined ? parseDate(req.body.closesAt, "วันปิดรับ") : round.closesAt;
+
+      if (opensAt.getTime() !== round.opensAt.getTime()) {
+        if (round.opensAt <= now) throw new Error("รอบนี้เปิดรับแล้ว แก้วันเปิดไม่ได้");
+        if (opensAt.getTime() < now.getTime() - PAST_TOLERANCE)
+          throw new Error("วันเปิดรับต้องเป็นเวลาในอนาคต");
+      }
+      if (closesAt <= opensAt) throw new Error("วันปิดรับต้องอยู่หลังวันเปิดรับ");
+
+      const neighbours = await dbClient
+        .select()
+        .from(roundsTable)
+        .where(
+          and(
+            eq(roundsTable.courseId, round.courseId),
+            inArray(roundsTable.sequenceNo, [round.sequenceNo - 1, round.sequenceNo + 1])
+          )
+        );
+      const prev = neighbours.find((r) => r.sequenceNo === round.sequenceNo - 1);
+      const next = neighbours.find((r) => r.sequenceNo === round.sequenceNo + 1);
+      if (prev && opensAt < prev.closesAt)
+        throw new Error(`ต้องเปิดหลังรอบที่ ${prev.sequenceNo} ปิดรับ`);
+      if (next && closesAt > next.opensAt)
+        throw new Error(`ต้องปิดก่อนรอบที่ ${next.sequenceNo} เปิดรับ`);
+
+      await dbClient
         .update(roundsTable)
-        .set({ isOpen })
-        .where(eq(roundsTable.id, id))
-        .returning();
+        .set({ opensAt, closesAt })
+        .where(eq(roundsTable.id, round.id));
 
-      if (!updated) throw new Error("Invalid id");
-
-      res.json({
-        msg: `Round ${isOpen ? "opened" : "closed"}`,
-        data: updated,
-      });
+      const data = await listRounds(round.courseId, INSTRUCTOR);
+      res.json({ msg: "Update round successfully", data });
     } catch (err) {
       next(err);
     }
   }
 );
 
-// DELETE /rounds/questions/:questionId — ลบคำถาม
 router.delete(
-  "/questions/:questionId",
+  "/:roundId",
   authenticate,
-  requireInstructor,
-  async (req, res, next) => {
+  requireCourseRole("instructor", courseIdOfRound),
+  async (req: AuthedRequest, res, next) => {
     try {
-      const questionId = String(req.params.questionId);
+      const round = await findRound(String(req.params.roundId));
+      if (round.opensAt <= new Date()) throw new Error("ลบได้เฉพาะรอบที่ยังไม่เปิดรับ");
 
-      const [deleted] = await dbClient
-        .delete(questionsTable)
-        .where(eq(questionsTable.id, questionId))
-        .returning();
+      await dbClient.transaction(async (tx) => {
+        await tx.delete(roundsTable).where(eq(roundsTable.id, round.id));
+        // เลื่อนจากน้อยไปมาก ไม่งั้นชน unique (course_id, sequence_no)
+        const later: RoundRow[] = await tx
+          .select()
+          .from(roundsTable)
+          .where(and(eq(roundsTable.courseId, round.courseId), gt(roundsTable.sequenceNo, round.sequenceNo)))
+          .orderBy(asc(roundsTable.sequenceNo));
+        for (const r of later)
+          await tx
+            .update(roundsTable)
+            .set({ sequenceNo: r.sequenceNo - 1 })
+            .where(eq(roundsTable.id, r.id));
+      });
 
-      if (!deleted) throw new Error("Invalid id");
+      const data = await listRounds(round.courseId, INSTRUCTOR);
+      res.json({ msg: "Delete round successfully", data });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
-      res.json({ msg: "Delete question successfully", data: { id: deleted.id } });
+router.patch(
+  "/:roundId/release",
+  authenticate,
+  requireCourseRole("instructor", courseIdOfRound),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const round = await findRound(String(req.params.roundId));
+      const now = new Date();
+      const set: Partial<Pick<RoundRow, "scoresReleasedAt" | "feedbackReleasedAt">> = {};
+
+      for (const [key, column] of [
+        ["scores", "scoresReleasedAt"],
+        ["feedback", "feedbackReleasedAt"],
+      ] as const) {
+        const value = req.body?.[key];
+        if (value === undefined) continue;
+        if (typeof value !== "boolean") throw new Error(`${key} ต้องเป็น true หรือ false`);
+        if (value && round.closesAt > now)
+          throw new Error("เผยแพร่ได้เฉพาะรอบที่ปิดรับแล้ว");
+        // เผยแพร่อยู่แล้วไม่เปลี่ยนเวลาเดิม
+        set[column] = value ? (round[column] ?? now) : null;
+      }
+      if (Object.keys(set).length === 0) throw new Error("ระบุ scores หรือ feedback");
+
+      await dbClient.update(roundsTable).set(set).where(eq(roundsTable.id, round.id));
+
+      const data = await listRounds(round.courseId, INSTRUCTOR);
+      res.json({ msg: "Update release successfully", data });
     } catch (err) {
       next(err);
     }
