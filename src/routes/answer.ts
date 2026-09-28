@@ -28,7 +28,7 @@ import {
 
 const router = Router();
 
-export const MAX_COMMENT_LENGTH = 500;
+const MAX_COMMENT_LENGTH = 500;
 
 function httpError(status: number, message: string) {
   const err: any = new Error(message);

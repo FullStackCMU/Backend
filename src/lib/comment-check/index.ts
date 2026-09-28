@@ -26,12 +26,12 @@ const debug = Debug("pf-backend:comment-check");
 
 let checker: CommentChecker | null | undefined;
 /** สร้างครั้งแรกที่ใช้ (หลัง dotenv โหลดแล้ว) */
-export function getChecker() {
+function getChecker() {
   if (checker === undefined) checker = createChecker();
   return checker;
 }
 
-export interface CommentToCheck {
+interface CommentToCheck {
   questionId: string;
   evaluateeId: string;
   text: string;
@@ -46,7 +46,7 @@ export interface CommentWarning {
 }
 
 /** verdict null = ตรวจไม่ได้ (ปิดการตรวจ / error / timeout) → ถือว่าผ่าน */
-export interface CheckOutcome {
+interface CheckOutcome {
   questionId: string;
   evaluateeId: string;
   verdict: Verdict | null;

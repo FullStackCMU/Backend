@@ -5,7 +5,7 @@ import { verdictSchema, type CommentChecker, type Verdict } from "./types.ts";
 /** คำตอบผิดรูปแบบ — message เป็นแค่โค้ด ไม่มีเนื้อหาคำตอบ */
 class MalformedResponse extends Error {}
 
-export interface OpenAICompatibleOptions {
+interface OpenAICompatibleOptions {
   provider: string;
   baseURL: string;
   apiKey: string;
