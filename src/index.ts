@@ -13,7 +13,6 @@ import courseRoute from "./routes/course.ts";
 import feedbackRoute from "./routes/feedback.ts";
 import groupRoute from "./routes/group.ts";
 import roundRoute from "./routes/round.ts";
-import userRoute from "./routes/user.ts";
 
 const debug = Debug("pf-backend");
 
@@ -35,7 +34,6 @@ app.use(express.json());
 
 app.use("/auth", authRoute);
 app.use("/consents", consentRoute);
-app.use("/users", userRoute);
 app.use("/courses", courseRoute);
 app.use("/groups", groupRoute);
 app.use("/rounds", roundRoute);
