@@ -46,9 +46,8 @@ export const studentActionEnum = pgEnum("student_action", [
 
 export const usersTable = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
-  // email @cmu.ac.th ใช้ match ตอน login
+  // ใช้จับคู่บัญชีตอน login — เก็บเป็นตัวพิมพ์เล็กเสมอ
   cmuAccount: varchar("cmu_account").notNull().unique(),
-  // null สำหรับอาจารย์
   studentId: varchar("student_id").unique(),
   firstnameTh: varchar("firstname_th"),
   lastnameTh: varchar("lastname_th"),
@@ -65,7 +64,6 @@ export const coursesTable = pgTable(
   "courses",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    // เช่น 261497
     courseCode: varchar("course_code").notNull(),
     title: varchar("title").notNull(),
     section: varchar("section"),
@@ -111,8 +109,7 @@ export const groupsTable = pgTable("groups", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
-// ใครอยู่กลุ่มไหน — ออกทีมเป็น soft delete (left_at)
-// 1 คนอยู่ได้แค่ 1 กลุ่มที่ยัง active ต่อวิชา
+// ออกกลุ่ม = ตั้ง left_at ไม่ลบแถว — partial unique index ให้มีกลุ่ม active ได้ 1 กลุ่มต่อวิชา
 export const groupMembersTable = pgTable(
   "group_members",
   {
@@ -141,7 +138,7 @@ export const groupMembersTable = pgTable(
   ]
 );
 
-// รอบประเมิน — เปิด/ปิดตาม opens_at/closes_at, released_at null = ซ่อน
+// ไม่มีคอลัมน์ status — คำนวณจาก opens_at/closes_at, *_released_at = null คือยังไม่เผยแพร่
 export const roundsTable = pgTable(
   "rounds",
   {
@@ -163,7 +160,7 @@ export const roundsTable = pgTable(
   (table) => [unique().on(table.courseId, table.sequenceNo)]
 );
 
-// ชุดคำถามมาตรฐาน seed ไว้ อาจารย์ยังสร้างเองไม่ได้ (Rubric Builder อยู่ P2)
+// ชุดคำถามเดียวใช้ทุกรอบ (ไม่ผูกกับรอบ) — อาจารย์ยังสร้างเองไม่ได้
 export const questionsTable = pgTable("questions", {
   id: uuid("id").primaryKey().defaultRandom(),
   orderNo: smallint("order_no").notNull(),
@@ -191,7 +188,7 @@ export const submissionsTable = pgTable(
   (table) => [unique().on(table.roundId, table.evaluatorId)]
 );
 
-// คำตอบรายข้อต่อ evaluatee — evaluator (จาก submission) = evaluatee คือประเมินตนเอง
+// evaluator (จาก submission) = evaluatee คือประเมินตนเอง
 export const ratingsTable = pgTable("ratings", {
   id: uuid("id").primaryKey().defaultRandom(),
   submissionId: uuid("submission_id")
@@ -207,7 +204,7 @@ export const ratingsTable = pgTable("ratings", {
   comment: text("comment"),
 });
 
-// AI ตรวจข้อความก่อนส่ง ไม่เก็บ draft ที่ถูกลบทิ้ง
+// ห้ามเพิ่มคอลัมน์เก็บข้อความที่ถูกเตือน (นโยบายความเป็นส่วนตัว)
 export const flagsTable = pgTable("flags", {
   id: uuid("id").primaryKey().defaultRandom(),
   submissionId: uuid("submission_id")
@@ -227,8 +224,7 @@ export const flagsTable = pgTable("flags", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
-// ความยินยอมให้เก็บ/ประมวลผลข้อมูล (รวมถึงส่งข้อความไปตรวจด้วย AI ภายนอก)
-// 1 แถวต่อ 1 ครั้งที่ยอมรับ — ถอนความยินยอมใช้ withdrawn_at (ไม่ลบแถว)
+// ถอนความยินยอมใช้ withdrawn_at ไม่ลบแถว
 export const consentsTable = pgTable(
   "consents",
   {
@@ -243,7 +239,7 @@ export const consentsTable = pgTable(
     withdrawnAt: timestamp("withdrawn_at", { withTimezone: true }),
   },
   (table) => [
-    // ยอมรับนโยบายเวอร์ชันเดียวกันซ้ำไม่ได้ ถ้ายังไม่ถอน (ถอนแล้วยอมรับใหม่ได้)
+    // partial: ถอนแล้วยอมรับฉบับเดิมใหม่ได้
     uniqueIndex("consents_user_id_policy_version_active_idx")
       .on(table.userId, table.policyVersion)
       .where(sql`${table.withdrawnAt} IS NULL`),

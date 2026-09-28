@@ -12,7 +12,7 @@ type NameFields = Pick<
   "firstnameTh" | "lastnameTh" | "firstnameEn" | "lastnameEn" | "cmuAccount"
 >;
 
-/** ชื่อที่แสดง — ไทยก่อน แล้วอังกฤษ แล้ว CMU account (ตรงกับ displayName ฝั่ง Frontend) */
+// ต้องตรงกับ displayName ใน Frontend/src/lib/user.ts
 export function displayName(u: NameFields) {
   const th = [u.firstnameTh, u.lastnameTh].filter(Boolean).join(" ");
   if (th) return th;

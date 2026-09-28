@@ -2,31 +2,21 @@ import { CONSENT_AI_PROVIDER } from "../../config.ts";
 import { OpenAICompatibleChecker } from "./openai-compatible.ts";
 import type { CommentChecker } from "./types.ts";
 
-/**
- * เลือก provider จาก AI_PROVIDER ใน .env — เพิ่มเจ้าใหม่ = เพิ่ม entry ที่นี่ + class ที่ implement CommentChecker
- * เช่น
- *   claude: () => new ClaudeChecker({ apiKey: env.ANTHROPIC_API_KEY, model: "claude-haiku-4-5" })  // @anthropic-ai/sdk
- *   local:  () => new OpenAICompatibleChecker({ provider: "local", baseURL: env.LOCAL_AI_BASE_URL, apiKey: "none", model: env.LOCAL_AI_MODEL })
- */
 const PROVIDERS: Record<string, (env: NodeJS.ProcessEnv) => CommentChecker | string> = {
   deepseek: (env) => {
     if (!env.DEEPSEEK_API_KEY) return "ไม่มี DEEPSEEK_API_KEY";
     return new OpenAICompatibleChecker({
       provider: "deepseek",
-      // https://api-docs.deepseek.com/
       baseURL: env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
       apiKey: env.DEEPSEEK_API_KEY,
       model: env.DEEPSEEK_MODEL || "deepseek-flash",
-      // thinking เปิดเป็นค่าเริ่มต้น — ช้ากว่าและเปลือง token โดยไม่จำเป็นสำหรับงานจัดประเภทสั้นๆ
+      // thinking เปิดเป็นค่าเริ่มต้น — ช้าและเปลือง token
       extraBody: { thinking: { type: "disabled" } },
     });
   },
 };
 
-/**
- * null = ปิดการตรวจ (ทุกข้อความผ่าน)
- * ส่งข้อความไปได้เฉพาะเจ้าที่บอกไว้ในนโยบายความยินยอมเท่านั้น (CONSENT_AI_PROVIDER)
- */
+// null = ปิดการตรวจ; ส่งได้เฉพาะเจ้าที่แจ้งใน consent (CONSENT_AI_PROVIDER)
 export function createChecker(env: NodeJS.ProcessEnv = process.env): CommentChecker | null {
   const provider = (env.AI_PROVIDER ?? "none").trim().toLowerCase();
   if (provider === "none" || provider === "") return null;

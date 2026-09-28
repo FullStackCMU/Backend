@@ -22,13 +22,11 @@ const router = Router();
 const DAY = 24 * 60 * 60 * 1000;
 const MAX_ROUNDS_PER_BATCH = 20;
 const MAX_INTERVAL_WEEKS = 8;
-// ยอมให้เวลาเปิดรอบแรกย้อนหลังได้นิดหน่อย (เวลาที่เลือกในฟอร์มกับเวลาที่กดส่งห่างกัน)
+// เวลาในฟอร์มกับเวลาที่กดส่งห่างกันได้นิดหน่อย
 const PAST_TOLERANCE = 5 * 60 * 1000;
-// วันปิดรับคิดตามเวลาไทย (Asia/Bangkok = UTC+7 ไม่มี DST) ไม่ขึ้นกับ timezone ของ server
-// Frontend ใช้สูตรเดียวกันใน src/lib/date.ts (endOfThaiDay)
+// เวลาไทย UTC+7 ไม่มี DST — ต้องตรงกับ endOfThaiDay ใน Frontend/src/lib/date.ts
 const THAI_OFFSET = 7 * 60 * 60 * 1000;
 
-/** 23:59 เวลาไทยของวันที่ date + addDays (นับตามวันที่เวลาไทย) */
 function endOfThaiDay(date: Date, addDays: number) {
   const local = new Date(date.getTime() + THAI_OFFSET);
   local.setUTCDate(local.getUTCDate() + addDays);
@@ -119,8 +117,6 @@ async function listRounds(courseId: string, viewer: { role: "instructor" } | { r
 
 const INSTRUCTOR = { role: "instructor" } as const;
 
-// GET /rounds/assignments — รอบที่เปิดรับอยู่ตอนนี้ จากทุกวิชาที่เป็นนักศึกษา (หน้า "แบบประเมิน")
-// พร้อมกลุ่ม/ข้อตกลง/สถานะการส่ง/ความคืบหน้าของร่าง (ตอบแล้ว x จาก คำถาม × คนในกลุ่ม)
 router.get("/assignments", authenticate, async (req: AuthedRequest, res, next) => {
   try {
     const userId = req.user!.id;
@@ -225,7 +221,6 @@ router.get("/assignments", authenticate, async (req: AuthedRequest, res, next) =
   }
 });
 
-// GET /rounds?courseId= — รอบทั้งหมดของวิชา (อาจารย์ได้ความคืบหน้าการส่งด้วย)
 router.get(
   "/",
   authenticate,
@@ -243,10 +238,6 @@ router.get(
   }
 );
 
-// POST /rounds/generate — สร้างรอบต่อจากรอบสุดท้ายตามตารางเวลา
-// { courseId, count, firstOpensAt, openDays, intervalWeeks, scaleMin, scaleMax }
-// รอบที่ k (เริ่ม 0): เปิด = firstOpensAt + k × intervalWeeks สัปดาห์
-// ปิด = 23:59 (เวลาไทย) ของวันที่ openDays นับวันเปิดเป็นวันที่ 1
 router.post(
   "/generate",
   authenticate,
@@ -299,8 +290,7 @@ router.post(
   }
 );
 
-// PATCH /rounds/:roundId { opensAt?, closesAt? } — แก้วันเปิด/ปิด
-// ต้องไม่ทับซ้อนรอบก่อนหน้า/ถัดไป (ลำดับเวลาตรงกับเลขรอบเสมอ)
+// ลำดับเวลาต้องตรงกับเลขรอบ — ห้ามทับรอบก่อนหน้า/ถัดไป
 router.patch(
   "/:roundId",
   authenticate,
@@ -352,7 +342,6 @@ router.patch(
   }
 );
 
-// DELETE /rounds/:roundId — ลบได้เฉพาะรอบที่ยังไม่เปิด แล้วเลื่อนเลขรอบถัดไปขึ้นมา (ไม่ให้เลขรอบขาด)
 router.delete(
   "/:roundId",
   authenticate,
@@ -364,8 +353,7 @@ router.delete(
 
       await dbClient.transaction(async (tx) => {
         await tx.delete(roundsTable).where(eq(roundsTable.id, round.id));
-        // รอบถัดไปทั้งหมดยังไม่เปิดเช่นกัน (ลำดับเวลาตรงกับเลขรอบ) — เลื่อนทีละรอบจากน้อยไปมาก
-        // เพื่อไม่ชน unique (course_id, sequence_no)
+        // เลื่อนจากน้อยไปมาก ไม่งั้นชน unique (course_id, sequence_no)
         const later: RoundRow[] = await tx
           .select()
           .from(roundsTable)
@@ -386,8 +374,6 @@ router.delete(
   }
 );
 
-// PATCH /rounds/:roundId/release { scores?: boolean, feedback?: boolean }
-// true = เผยแพร่ตอนนี้ (ได้เฉพาะรอบที่ปิดรับแล้ว), false = ยกเลิกการเผยแพร่
 router.patch(
   "/:roundId/release",
   authenticate,

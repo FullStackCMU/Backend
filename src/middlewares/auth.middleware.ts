@@ -12,9 +12,8 @@ export type EnrollmentRole = (typeof enrollmentsTable.$inferSelect)["role"];
 
 export interface AuthedRequest extends Request {
   user?: typeof usersTable.$inferSelect;
-  /** ตั้งโดย requireCourseRole — วิชาที่ผ่านการเช็คสิทธิ์แล้ว */
+  // courseId / courseRole มีค่าเฉพาะหลังผ่าน requireCourseRole
   courseId?: string;
-  /** ตั้งโดย requireCourseRole — role ของผู้ใช้ในวิชานั้น */
   courseRole?: EnrollmentRole;
 }
 
@@ -30,7 +29,7 @@ function unauthorized(res: Response, message: string) {
   return res.status(401).json({ message, type: "Unauthorized" });
 }
 
-// โหลด user จาก DB ทุก request — account_type / สิทธิ์ต้องมาจาก DB ไม่ใช่จาก token
+// สิทธิ์ต้องมาจาก DB ไม่ใช่จาก token
 export async function authenticate(
   req: AuthedRequest,
   res: Response,
@@ -60,7 +59,7 @@ export async function authenticate(
   }
 }
 
-// บุคลากร มช. (อาจารย์/เจ้าหน้าที่) — ใช้กับงานระดับระบบ เช่น สร้างรายวิชา
+// MISEmpAcc = บุคลากร มช.
 export function requireStaff(
   req: AuthedRequest,
   res: Response,
@@ -81,7 +80,6 @@ function defaultCourseId(req: Request) {
   return typeof value === "string" ? value : undefined;
 }
 
-// getCourseId เป็น async ได้ (เช่น หา courseId จาก groupId ใน DB)
 export function requireCourseRole(
   role: EnrollmentRole | EnrollmentRole[],
   getCourseId: (req: Request) => string | undefined | Promise<string | undefined> = defaultCourseId

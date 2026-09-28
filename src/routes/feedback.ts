@@ -21,8 +21,7 @@ import {
   type AuthedRequest,
 } from "../middlewares/auth.middleware.ts";
 
-// ผลประเมินของนักศึกษา — เปิดให้ดูตาม release ของอาจารย์ (บังคับที่ API ไม่ใช่แค่ซ่อนที่หน้าเว็บ)
-// ห้ามส่ง evaluator_id / submission id ของคนอื่นออกไปเด็ดขาด
+// ห้ามส่ง evaluator_id / submission id ของคนอื่นให้นักศึกษา
 const router = Router();
 
 function httpError(status: number, message: string) {
@@ -33,7 +32,7 @@ function httpError(status: number, message: string) {
 
 const isReleased = (at: Date | null, now: Date) => at !== null && at <= now;
 
-/** สลับลำดับแบบสุ่ม (Fisher–Yates) — ความเห็นต้องไม่เรียงตามคนเขียน */
+// ความเห็นต้องไม่เรียงตามคนเขียน
 function shuffle<T>(items: T[]) {
   const a = [...items];
   for (let i = a.length - 1; i > 0; i--) {
@@ -45,7 +44,6 @@ function shuffle<T>(items: T[]) {
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
-// GET /feedback — รอบที่ดูผลได้แล้ว จากทุกวิชาที่เป็นนักศึกษา (ใหม่สุดก่อน)
 router.get("/", authenticate, async (req: AuthedRequest, res, next) => {
   try {
     const now = new Date();
@@ -93,11 +91,6 @@ async function findRound(roundId: string) {
 }
 const courseIdOfRound = async (req: Request) => (await findRound(String(req.params.roundId))).courseId;
 
-// GET /feedback/rounds/:roundId — ผลประเมินของฉันในรอบนี้
-//   scores   (มีเมื่อ scores_released_at ถึงแล้ว): ค่าเฉลี่ยจากเพื่อนรายข้อ เทียบกับคะแนนที่ให้ตัวเอง
-//   comments (มีเมื่อ feedback_released_at ถึงแล้ว): ความเห็นจากเพื่อน ไม่ระบุชื่อ สลับลำดับ
-//   ยังไม่ release → เป็น null (หน้าเว็บแสดงว่ารออาจารย์เผยแพร่)
-//   เพื่อนส่งให้น้อยกว่า MIN_PEERS_FOR_ANONYMITY คน → null ทั้งคู่ + withheldReason
 router.get(
   "/rounds/:roundId",
   authenticate,
@@ -126,8 +119,7 @@ router.get(
         .from(submissionsTable)
         .where(and(eq(submissionsTable.roundId, round.id), eq(submissionsTable.evaluatorId, userId)));
 
-      // คะแนน/ความเห็นที่ "เพื่อน" ให้ฉัน จาก submission ที่ส่งแล้วเท่านั้น
-      // evaluatorId ใช้นับจำนวนคนภายใน server เท่านั้น — ไม่ส่งออก
+      // evaluatorId ใช้นับคนใน server เท่านั้น ห้ามส่งออก
       const received = await dbClient
         .select({
           evaluatorId: submissionsTable.evaluatorId,
@@ -147,7 +139,6 @@ router.get(
           )
         );
 
-      // กลุ่มของรอบนี้: จาก submission ของตัวเอง → กลุ่มของเพื่อนที่ประเมินฉัน → กลุ่มปัจจุบัน
       const [current] =
         mine || received.length
           ? []
@@ -171,7 +162,7 @@ router.get(
       const scoresReleased = isReleased(round.scoresReleasedAt, now);
       const feedbackReleased = isReleased(round.feedbackReleasedAt, now);
       const peerCount = new Set(received.map((r) => r.evaluatorId)).size;
-      // เพื่อนประเมินน้อยเกินไป → ไม่ส่งทั้งคะแนนและความเห็น (กันรู้ตัวคนเขียน)
+      // ผู้ประเมินน้อยเกินไป → ไม่ส่งทั้งคะแนนและความเห็น (กันรู้ตัวคนเขียน)
       const withheld = (scoresReleased || feedbackReleased) && peerCount < MIN_PEERS_FOR_ANONYMITY;
 
       let scores = null;
@@ -237,9 +228,7 @@ router.get(
           course,
           groupName: group?.name ?? null,
           mySubmission: mine ? { status: mine.status, submittedAt: mine.submittedAt } : null,
-          /** จำนวนเพื่อนที่ส่งแบบประเมินให้ฉัน */
           peerCount,
-          /** มีค่า = เผยแพร่แล้วแต่ไม่แสดงผลเพื่อรักษาความเป็นนิรนาม */
           withheldReason: withheld ? "ผู้ประเมินไม่พอสำหรับแสดงผลแบบไม่ระบุชื่อ" : null,
           minPeers: MIN_PEERS_FOR_ANONYMITY,
           scores,
@@ -251,8 +240,6 @@ router.get(
     }
   }
 );
-
-// ───────────── อาจารย์: แดชบอร์ดผลประเมิน (เห็นทุกอย่างรวมถึงชื่อผู้เขียน) ─────────────
 
 type ReceivedRow = {
   evaluatorId: string;
@@ -280,7 +267,6 @@ async function roundRatings(roundId: string): Promise<ReceivedRow[]> {
 
 const average = (xs: number[]) => (xs.length ? round1(xs.reduce((a, b) => a + b, 0) / xs.length) : null);
 
-// GET /feedback/rounds/:roundId/overview — ตารางคะแนนของทุกคนในรอบ จัดกลุ่มตามทีม
 router.get(
   "/rounds/:roundId/overview",
   authenticate,
@@ -312,7 +298,6 @@ router.get(
       const rows = students.map((s) => {
         const own = submissions.find((x) => x.evaluatorId === s.id);
         const peer = ratings.filter((r) => r.evaluateeId === s.id && r.evaluatorId !== s.id);
-        // กลุ่มในรอบนี้: submission ของตัวเอง → กลุ่มของเพื่อนที่ประเมิน → กลุ่มปัจจุบัน
         const groupId = own?.groupId ?? peer[0]?.groupId ?? s.group?.id ?? null;
         return {
           student: { id: s.id, studentId: s.studentId, name: s.name },
@@ -357,7 +342,6 @@ router.get(
   }
 );
 
-// GET /feedback/rounds/:roundId/students/:studentId — คะแนน/ความเห็นที่นักศึกษาคนนี้ได้รับ แยกตามผู้ประเมิน
 router.get(
   "/rounds/:roundId/students/:studentId",
   authenticate,
@@ -421,7 +405,6 @@ router.get(
           evaluator: { id, name: names.get(id) ?? "(ไม่อยู่ในวิชาแล้ว)", isSelf: id === studentId },
           answers: questions.map((q) => {
             const r = rows.find((x) => x.questionId === q.id);
-            // ผู้เขียนถูกเตือนแล้วเลือก "ส่งตามนี้" — ข้อความที่แสดงคือข้อความที่ถูกเตือน
             const ignored = flags.find(
               (f) =>
                 f.evaluatorId === id &&

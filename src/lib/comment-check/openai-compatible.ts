@@ -2,7 +2,6 @@ import OpenAI from "openai";
 import { buildUserPrompt, SYSTEM_PROMPT } from "./prompt.ts";
 import { verdictSchema, type CommentChecker, type Verdict } from "./types.ts";
 
-/** คำตอบผิดรูปแบบ — message เป็นแค่โค้ด ไม่มีเนื้อหาคำตอบ */
 class MalformedResponse extends Error {}
 
 interface OpenAICompatibleOptions {
@@ -10,14 +9,10 @@ interface OpenAICompatibleOptions {
   baseURL: string;
   apiKey: string;
   model: string;
-  /** พารามิเตอร์เฉพาะเจ้า ที่ SDK ไม่มี type ให้ เช่น DeepSeek thinking */
+  // DeepSeek thinking ฯลฯ ที่ SDK ไม่มี type
   extraBody?: Record<string, unknown>;
 }
 
-/**
- * provider ที่ใช้ OpenAI-compatible Chat Completions API (DeepSeek, vLLM/Ollama ในเครื่อง ฯลฯ)
- * ส่งแค่ system prompt + ข้อความที่ลบข้อมูลส่วนตัวแล้ว — ไม่ส่ง user/metadata ใดๆ
- */
 export class OpenAICompatibleChecker implements CommentChecker {
   readonly modelVersion: string;
   private client: OpenAI;
@@ -26,12 +21,12 @@ export class OpenAICompatibleChecker implements CommentChecker {
   constructor(options: OpenAICompatibleOptions) {
     this.options = options;
     this.modelVersion = `${options.provider}/${options.model}`;
-    // retry ไม่ได้ช่วย — ทั้งหมดต้องจบใน 5 วินาที (ผู้เรียกคุมด้วย signal)
+    // ไม่ retry — ทั้งหมดต้องจบใน 5 วินาที
     this.client = new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL, maxRetries: 0 });
   }
 
   async check(text: string, signal: AbortSignal): Promise<Verdict> {
-    // โมเดลตอบผิดรูปแบบเป็นครั้งคราว (JSON เสีย / content ว่างตามเอกสาร DeepSeek) → ลองใหม่ 1 ครั้งในเวลาที่เหลือ
+    // โมเดลตอบผิดรูปแบบเป็นครั้งคราว → ลองใหม่ 1 ครั้งในเวลาที่เหลือ
     try {
       return await this.request(text, signal);
     } catch (err) {
@@ -57,7 +52,7 @@ export class OpenAICompatibleChecker implements CommentChecker {
     );
     const content = res.choices[0]?.message?.content;
     if (!content) throw new MalformedResponse("empty_response");
-    // เผื่อโมเดลห่อด้วย ```json หรือมีข้อความก่อน/หลัง — เอาเฉพาะ {...} ก้อนนอกสุด
+    // โมเดลอาจห่อด้วย ```json หรือมีข้อความก่อน/หลัง
     const start = content.indexOf("{");
     const end = content.lastIndexOf("}");
     let json: unknown;
@@ -67,7 +62,7 @@ export class OpenAICompatibleChecker implements CommentChecker {
       throw new MalformedResponse("invalid_json");
     }
     const parsed = verdictSchema.safeParse(json);
-    // ห้ามแนบ content/ZodError ไปกับ error — อาจมีข้อความของนักศึกษา
+    // ห้ามแนบ content/ZodError — อาจมีข้อความของนักศึกษา
     if (!parsed.success) throw new MalformedResponse("invalid_verdict");
     return parsed.data;
   }

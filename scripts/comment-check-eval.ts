@@ -1,10 +1,4 @@
-/**
- * วัดผล AI flagger กับชุดทดสอบ: precision / recall / เวลาตอบ
- *   pnpm run eval:comments
- *
- * ใช้ provider + prompt + การแทนชื่อชุดเดียวกับของจริง (ไม่แตะ DB ไม่ใช้ cache)
- * ตรวจทีละข้อตามลำดับ เพื่อวัดเวลาตอบของแต่ละคำขอ — timeout/error นับเป็น "ไม่เตือน" เหมือนระบบจริง
- */
+// timeout/error นับเป็น "ไม่เตือน" เหมือนระบบจริง
 import "dotenv/config";
 import { COMMENT_CHECK_TIMEOUT_MS } from "../src/config.ts";
 import { createChecker } from "../src/lib/comment-check/providers.ts";

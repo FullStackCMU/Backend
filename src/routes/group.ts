@@ -68,7 +68,7 @@ async function listGroups(courseId: string, onlyGroupId?: string) {
   }));
 }
 
-// ตรวจค่าที่แก้ได้ของกลุ่ม — undefined = ไม่ได้ส่งมา (ไม่แก้)
+// undefined = ไม่ได้ส่งมา (ไม่แก้)
 function parseGroupInput(body: Record<string, unknown>) {
   const out: { name?: string; maxMembers?: number | null; contractText?: string | null } = {};
 
@@ -126,7 +126,7 @@ async function courseIdOfGroup(req: Request) {
   return group.courseId;
 }
 
-// มุมมองนักศึกษา: เพื่อนร่วมกลุ่มมีแค่ชื่อ — รหัสนักศึกษา/อีเมลเห็นได้เฉพาะอาจารย์
+// นักศึกษาห้ามเห็นรหัส/อีเมลของเพื่อน
 function toStudentGroup(group: Awaited<ReturnType<typeof listGroups>>[number]) {
   return {
     id: group.id,
@@ -142,7 +142,6 @@ function toStudentGroup(group: Awaited<ReturnType<typeof listGroups>>[number]) {
   };
 }
 
-// GET /groups?courseId= — อาจารย์ดูทุกกลุ่ม + นักศึกษาที่ยังไม่มีกลุ่ม
 router.get(
   "/",
   authenticate,
@@ -167,7 +166,6 @@ router.get(
   }
 );
 
-// GET /groups/my?courseId= — นักศึกษาดูกลุ่มปัจจุบันของตัวเอง (null = ยังไม่มีกลุ่ม)
 router.get(
   "/my",
   authenticate,
@@ -194,7 +192,6 @@ router.get(
   }
 );
 
-// POST /groups { courseId, name, maxMembers } — อาจารย์สร้างกลุ่ม (นักศึกษาเข้ากลุ่มเอง)
 router.post(
   "/",
   authenticate,
@@ -221,7 +218,6 @@ router.post(
   }
 );
 
-// PATCH /groups/:groupId { name?, maxMembers?, contractText? } — อาจารย์แก้กลุ่ม / ข้อตกลงกลุ่ม
 router.patch(
   "/:groupId",
   authenticate,
@@ -241,7 +237,7 @@ router.patch(
           `กลุ่มนี้มีสมาชิก ${current.members.length} คนแล้ว ตั้งจำนวนสูงสุดให้น้อยกว่านี้ไม่ได้`
         );
 
-      // ข้อตกลงเปลี่ยน → ทุกคนในกลุ่มต้องยอมรับฉบับใหม่ (ล้าง contract_accepted_at)
+      // ข้อตกลงเปลี่ยน → ทุกคนในกลุ่มต้องยอมรับใหม่
       const contractChanged =
         input.contractText !== undefined && input.contractText !== current.contractText;
 
@@ -261,8 +257,6 @@ router.patch(
     }
   }
 );
-
-// ───────────── นักศึกษา: เลือกกลุ่มเอง ─────────────
 
 type Tx = Parameters<Parameters<typeof dbClient.transaction>[0]>[0];
 
@@ -286,7 +280,7 @@ async function findActiveMembership(db: Tx | typeof dbClient, courseId: string, 
   return membership;
 }
 
-// ห้ามเข้า/ออกกลุ่มระหว่างรอบที่เปิดรับ ถ้ามี submission ในรอบนั้นแล้ว (submission ผูกกับกลุ่ม)
+// submission ผูกกับกลุ่ม — ห้ามเปลี่ยนกลุ่มระหว่างรอบที่เริ่มทำแล้ว
 async function assertTeamChangeAllowed(db: Tx | typeof dbClient, courseId: string, userId: string) {
   const now = new Date();
   const [locked] = await db
@@ -309,7 +303,6 @@ async function assertTeamChangeAllowed(db: Tx | typeof dbClient, courseId: strin
     );
 }
 
-// GET /groups/available?courseId= — นักศึกษาดูกลุ่มทั้งหมดเพื่อเลือกเข้า (ไม่แสดงรหัส/อีเมลของคนอื่น)
 router.get(
   "/available",
   authenticate,
@@ -333,7 +326,6 @@ router.get(
   }
 );
 
-// POST /groups/:groupId/join — นักศึกษาเข้ากลุ่ม (ต้องยังไม่มีกลุ่ม และกลุ่มยังไม่เต็ม)
 router.post(
   "/:groupId/join",
   authenticate,
@@ -345,7 +337,7 @@ router.post(
       const groupId = String(req.params.groupId);
 
       await dbClient.transaction(async (tx) => {
-        // ล็อกแถวกลุ่ม กันสองคนเข้าที่นั่งสุดท้ายพร้อมกัน
+        // FOR UPDATE กันสองคนเข้าที่นั่งสุดท้ายพร้อมกัน
         const [group] = await tx
           .select({ maxMembers: groupsTable.maxMembers })
           .from(groupsTable)
@@ -375,7 +367,6 @@ router.post(
   }
 );
 
-// POST /groups/leave { courseId } — นักศึกษาออกจากกลุ่มปัจจุบัน (ตั้ง left_at เก็บประวัติไว้)
 router.post(
   "/leave",
   authenticate,
@@ -402,7 +393,6 @@ router.post(
   }
 );
 
-// POST /groups/:groupId/accept-contract — สมาชิกยอมรับข้อตกลงกลุ่ม (ฉบับปัจจุบัน)
 router.post(
   "/:groupId/accept-contract",
   authenticate,

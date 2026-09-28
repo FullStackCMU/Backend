@@ -16,10 +16,10 @@ import {
 const DAY = 24 * 60 * 60 * 1000;
 const daysFromNow = (n: number) => new Date(Date.now() + n * DAY);
 
-// ต้องตรงกับ Backend/src/config.ts (CONSENT_POLICY_VERSION)
+// ต้องตรงกับ CONSENT_POLICY_VERSION ใน Backend/src/config.ts
 const CONSENT_POLICY_VERSION = "2026-09-v4";
 
-// ลบตามลำดับ dependency (ลูกก่อนแม่)
+// ลบลูกก่อนแม่ ไม่งั้นติด foreign key
 async function resetAll() {
   await dbClient.delete(consentsTable);
   await dbClient.delete(flagsTable);
@@ -38,11 +38,7 @@ async function resetAll() {
 type Scores = [number, number, number]; // คำถามข้อ 1–3 (rating)
 type Comments = [string, string]; // คำถามข้อ 4–5 (text)
 
-/**
- * คำตอบรอบ 1 — evaluator → evaluatee → [คะแนน 3 ข้อ, ความเห็น 2 ข้อ]
- * ออกแบบให้มีทั้งคนที่ให้คะแนนตัวเองสูงกว่าเพื่อนให้ (กิตติพงษ์) และต่ำกว่า (สมหญิง)
- * และความเห็นมีทั้งชม ติ และกลางๆ
- */
+// ตั้งใจให้กิตติพงษ์ให้ตัวเองสูงกว่าเพื่อน และสมหญิงต่ำกว่า (ใช้ทดสอบไฮไลต์ในแดชบอร์ด)
 const ROUND1: Record<string, Record<string, [Scores, Comments]>> = {
   somchai: {
     somchai: [[4, 4, 5], [
@@ -94,7 +90,7 @@ const ROUND1: Record<string, Record<string, [Scores, Comments]>> = {
   },
 };
 
-/** วิชาที่ 2 (261492) รอบ 1 — patiphan ได้รับการประเมินจากเพื่อน 2 คน (ถึงเกณฑ์แสดงผลแบบนิรนาม) */
+// patiphan ต้องมีผู้ประเมิน ≥ MIN_PEERS_FOR_ANONYMITY คน ไม่งั้นผลถูกซ่อน
 const COURSE2_ROUND1: Record<string, Record<string, [Scores, Comments]>> = {
   patiphan: {
     patiphan: [[4, 3, 4], [
@@ -186,8 +182,7 @@ async function insertRoundAnswers(opts: {
 }
 
 async function seedAll() {
-  // อาจารย์ = wichai.t, patiphan_leknok = นักศึกษาที่ login ผ่าน CPE mock OAuth ได้จริง
-  // ที่เหลือเป็นบัญชีสมมติ (import ไว้ ยังไม่เคย login)
+  // wichai.t และ patiphan_leknok login ผ่าน mock OAuth ได้จริง ที่เหลือเป็นบัญชีสมมติ
   const [instructor] = await dbClient
     .insert(usersTable)
     .values({
@@ -239,7 +234,7 @@ async function seedAll() {
   const contractText =
     "1. เข้าประชุมทีมทุกสัปดาห์\n2. แจ้งล่วงหน้าหากส่งงานไม่ทัน\n3. รับฟังความเห็นของทุกคน";
 
-  // Alpha รับได้ 4 คน (มี 3) และ Beta 3 คน (มี 2) → patiphan เลือกเข้าได้ทั้งสองกลุ่ม
+  // Alpha และ Beta ต้องมีที่ว่างเหลือให้ patiphan ทดสอบการเข้ากลุ่ม
   const [alpha, beta] = await dbClient
     .insert(groupsTable)
     .values([
@@ -248,9 +243,7 @@ async function seedAll() {
     ])
     .returning();
 
-  // patiphan ยังไม่มีกลุ่ม (ทดสอบ flow เข้ากลุ่ม)
-  // Alpha: สมชาย สมหญิง ธนพล (ยอมรับข้อตกลงแล้ว) — ธนพลไม่ได้ส่งรอบ 1
-  // Beta: มาลี กิตติพงษ์ (ยังไม่ยอมรับข้อตกลง — สมมติว่าอาจารย์แก้ข้อตกลงหลังรอบ 1)
+  // patiphan ไม่มีกลุ่ม (ทดสอบเข้ากลุ่ม), ธนพลไม่ได้ส่งรอบ 1, Beta ยังไม่ยอมรับข้อตกลง
   const members: [string, typeof alpha][] = [
     ["somchai", alpha],
     ["somying", alpha],
@@ -268,7 +261,6 @@ async function seedAll() {
     }))
   );
 
-  // รอบ 1 ปิดแล้ว + เผยแพร่ทั้งคะแนนและฟีดแบ็ก, รอบ 2 เปิดอยู่ตอนนี้
   const [round1, round2] = await dbClient
     .insert(roundsTable)
     .values([
@@ -289,7 +281,6 @@ async function seedAll() {
     ])
     .returning();
 
-  // ชุดคำถามมาตรฐาน (ใช้ร่วมกันทุกรอบ)
   const questions = await dbClient
     .insert(questionsTable)
     .values([
@@ -301,7 +292,7 @@ async function seedAll() {
     ])
     .returning();
 
-  // คนที่ส่งรอบ 1 (ทั้ง 2 วิชา) ต้องให้ consent แล้ว (backend บังคับตอนส่งจริง)
+  // ทุกคนที่มีคำตอบใน seed ต้องมี consent (backend บังคับตอนส่ง)
   const consentKeys = new Set([...Object.keys(ROUND1), ...Object.keys(COURSE2_ROUND1)]);
   await dbClient.insert(consentsTable).values(
     [...consentKeys].map((key) => ({
@@ -320,7 +311,6 @@ async function seedAll() {
     submittedAt: daysFromNow(-16),
   });
 
-  // ───── วิชาที่ 2: 261492 — patiphan อยู่ในกลุ่ม ยอมรับข้อตกลงแล้ว ดูผลรอบ 1 ได้จริง ─────
   const [course2] = await dbClient
     .insert(coursesTable)
     .values({

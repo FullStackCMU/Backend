@@ -25,7 +25,6 @@ async function findActiveConsent(userId: string) {
   };
 }
 
-// GET /consents/me — ยอมรับนโยบายเวอร์ชันปัจจุบันแล้วหรือยัง
 router.get("/me", authenticate, async (req: AuthedRequest, res, next) => {
   try {
     const data = await findActiveConsent(req.user!.id);
@@ -35,8 +34,7 @@ router.get("/me", authenticate, async (req: AuthedRequest, res, next) => {
   }
 });
 
-// POST /consents { policyVersion } — ยอมรับนโยบาย
-// ต้องส่งเวอร์ชันที่หน้าเว็บแสดงอยู่มาด้วย กันกรณีนโยบายเปลี่ยนระหว่างที่เปิดหน้าค้างไว้
+// ต้องส่งเวอร์ชันที่หน้าเว็บแสดง กันนโยบายเปลี่ยนระหว่างเปิดหน้าค้าง
 router.post("/", authenticate, async (req: AuthedRequest, res, next) => {
   try {
     const policyVersion = String(req.body.policyVersion ?? "");
@@ -48,7 +46,7 @@ router.post("/", authenticate, async (req: AuthedRequest, res, next) => {
       throw err;
     }
 
-    // ยอมรับซ้ำ = ไม่ทำอะไร (partial unique index กันแถวซ้ำอยู่แล้ว)
+    // partial unique index กันแถวซ้ำ
     await dbClient
       .insert(consentsTable)
       .values({ userId: req.user!.id, policyVersion })

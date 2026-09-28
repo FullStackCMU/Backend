@@ -5,7 +5,7 @@ import { connectionString } from "@db/utils.js";
 
 export const dbConn = postgres(connectionString);
 
-// log แค่ SQL ห้าม log params — มีความเห็นในแบบประเมิน/ข้อมูลส่วนตัวของนักศึกษา
+// ห้าม log params — มีความเห็นในแบบประเมิน
 const logger = { logQuery: (query: string) => console.log(`Query: ${query}`) };
 
 export const dbClient = drizzle(dbConn, { schema: schema, logger });

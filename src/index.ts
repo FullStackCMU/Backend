@@ -40,11 +40,11 @@ app.use("/rounds", roundRoute);
 app.use("/answers", answerRoute);
 app.use("/feedback", feedbackRoute);
 
-// ห้ามส่งข้อความดิบ stack ของ DB กลับ client เพราะเปิดเผยชื่อ table/column ภายใน
+// ห้ามส่งข้อความ error ของ DB กลับ client — เปิดเผยชื่อ table/column
 const PG_MESSAGE: Record<string, string> = {
-  "23505": "ข้อมูลนี้มีอยู่แล้วในระบบ", // unique_violation
-  "23503": "อ้างอิงข้อมูลที่ไม่มีอยู่จริง", // foreign_key_violation
-  "23502": "ข้อมูลไม่ครบตามที่กำหนด", // not_null_violation
+  "23505": "ข้อมูลนี้มีอยู่แล้วในระบบ",
+  "23503": "อ้างอิงข้อมูลที่ไม่มีอยู่จริง",
+  "23502": "ข้อมูลไม่ครบตามที่กำหนด",
   "22P02": "รูปแบบข้อมูลไม่ถูกต้อง", // invalid_text_representation
 };
 
@@ -56,7 +56,7 @@ const jsonErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
       : undefined);
   const isDbError = !!pgCode || err.name === "DrizzleQueryError";
 
-  // log ไว้ฝั่ง server — error ของ DB ห้าม log message เพราะ Drizzle แนบ params (ความเห็นในแบบประเมิน) มาด้วย
+  // ห้าม log message ของ DB error — Drizzle แนบ params (ความเห็นนักศึกษา) มาด้วย
   debug(isDbError ? `DB error ${pgCode ?? err.name} on ${req.method} ${req.path}` : err.message);
 
   let statusCode: number;

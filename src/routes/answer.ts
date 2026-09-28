@@ -45,10 +45,7 @@ const courseIdOfRound = async (req: Request) => (await findRound(String(req.para
 
 type Blocker = { status: number; message: string } | null;
 
-/**
- * ทุกอย่างที่ต้องใช้ทำแบบประเมินรอบหนึ่งของนักศึกษา 1 คน + เหตุผลที่ยังแก้ไม่ได้ (blocker)
- * กลุ่ม: ถ้ามี submission แล้วใช้กลุ่มของ submission (เปลี่ยนกลุ่มถูกล็อกระหว่างรอบอยู่แล้ว)
- */
+// มี submission แล้วใช้กลุ่มของ submission ไม่ใช่กลุ่มปัจจุบัน
 async function loadContext(roundId: string, userId: string) {
   const round = await findRound(roundId);
   const now = new Date();
@@ -118,7 +115,7 @@ async function loadContext(roundId: string, userId: string) {
       )
     );
 
-  // เหตุผลที่ยังบันทึก/ส่งไม่ได้ เรียงตามลำดับที่ควรแจ้งผู้ใช้
+  // เรียงตามลำดับที่ควรแจ้งผู้ใช้
   let blocker: Blocker = null;
   if (submission?.status === "submitted") blocker = { status: 409, message: "คุณส่งแบบประเมินรอบนี้แล้ว แก้ไขไม่ได้" };
   else if (now < round.opensAt) blocker = { status: 409, message: "รอบนี้ยังไม่เปิดรับ" };
@@ -153,9 +150,7 @@ function toResponse(ctx: Context, warnings: CommentWarning[] = []) {
       ? { status: ctx.submission.status, submittedAt: ctx.submission.submittedAt }
       : null,
     answers: ctx.answers,
-    /** null = บันทึก/ส่งได้ */
     blocker: ctx.blocker?.message ?? null,
-    /** คำเตือนจาก AI ของความเห็นที่ตรวจในคำขอนี้ */
     warnings,
   };
 }
@@ -194,7 +189,7 @@ function parseAnswers(input: unknown, ctx: Context): AnswerRow[] {
   return [...rows.values()];
 }
 
-/** บันทึกคำตอบทั้งชุดแทนของเดิม (client ส่งคำตอบทั้งหมดที่มีทุกครั้ง) คืน submission id */
+// แทนที่คำตอบเดิมทั้งชุด — client ต้องส่งคำตอบทั้งหมดทุกครั้ง
 async function saveDraft(ctx: Context, userId: string, rows: AnswerRow[]) {
   return dbClient.transaction(async (tx) => {
     let submissionId = ctx.submission?.id;
@@ -204,7 +199,7 @@ async function saveDraft(ctx: Context, userId: string, rows: AnswerRow[]) {
         .values({ roundId: ctx.round.id, groupId: ctx.group!.id, evaluatorId: userId, status: "draft" })
         .onConflictDoNothing()
         .returning({ id: submissionsTable.id });
-      // กดบันทึกพร้อมกันสองแท็บ → อีกแท็บสร้างไปแล้ว
+      // อีกแท็บสร้างไปแล้ว (บันทึกพร้อมกัน)
       submissionId =
         created?.id ??
         (
@@ -239,7 +234,6 @@ function stringList(input: unknown): string[] {
 
 const roundAccess = requireCourseRole("student", courseIdOfRound);
 
-// GET /answers/:roundId — ข้อมูลทำแบบประเมิน + คำตอบที่บันทึกไว้ + blocker (null = แก้ได้)
 router.get("/:roundId", authenticate, roundAccess, async (req: AuthedRequest, res, next) => {
   try {
     const ctx = await loadContext(String(req.params.roundId), req.user!.id);
@@ -249,8 +243,7 @@ router.get("/:roundId", authenticate, roundAccess, async (req: AuthedRequest, re
   }
 });
 
-// PUT /answers/:roundId/draft { answers, checkQuestionIds? } — บันทึกร่าง (ตอบไม่ครบได้)
-// checkQuestionIds: ตรวจความเห็นของคำถามเหล่านี้ด้วย AI แล้วคืน warnings (กด "ถัดไป" จากคำถาม text)
+// checkQuestionIds = ให้ AI ตรวจความเห็นของคำถามเหล่านี้
 router.put("/:roundId/draft", authenticate, roundAccess, async (req: AuthedRequest, res, next) => {
   try {
     const userId = req.user!.id;
@@ -270,9 +263,7 @@ router.put("/:roundId/draft", authenticate, roundAccess, async (req: AuthedReque
   }
 });
 
-// POST /answers/:roundId/submit { answers, acknowledged? } — บันทึกแล้วส่ง (ต้องตอบครบทุกข้อ ทุกคน) ส่งแล้วแก้ไม่ได้
-// AI เตือนความเห็นไหนที่ยังไม่อยู่ใน acknowledged ("questionId:evaluateeId" ที่นักศึกษากด "ส่งตามนี้")
-// → ยังไม่ส่ง คืน warnings ให้เลือกแก้หรือส่งตามนี้ (ตอบ 200 — เตือน ไม่ใช่ error)
+// AI เตือนความเห็นที่ไม่อยู่ใน acknowledged → ยังไม่ส่ง ตอบ 200 พร้อม warnings
 router.post("/:roundId/submit", authenticate, roundAccess, async (req: AuthedRequest, res, next) => {
   try {
     const userId = req.user!.id;
@@ -290,7 +281,7 @@ router.post("/:roundId/submit", authenticate, roundAccess, async (req: AuthedReq
 
     const submissionId = await saveDraft(ctx, userId, rows);
 
-    // ข้อความที่ตรวจไปแล้วตอนกด "ถัดไป" ได้ผลจาก cache ไม่ส่งให้ AI ซ้ำ
+    // ข้อความที่ตรวจแล้วได้ผลจาก cache ไม่ส่งให้ AI ซ้ำ
     const warnings = toWarnings(await checkRows(ctx, submissionId, rows));
     const acknowledged = new Set(stringList(req.body?.acknowledged));
     if (warnings.some((w) => !acknowledged.has(warningKey(w)))) {

@@ -25,12 +25,11 @@ const OAUTH_AUTHORIZE_URL = process.env.OAUTH_AUTHORIZE_URL ?? "";
 const OAUTH_TOKEN_URL = process.env.OAUTH_TOKEN_URL ?? "";
 const OAUTH_REDIRECT_URL = process.env.OAUTH_REDIRECT_URL ?? "";
 const OAUTH_SCOPE = process.env.OAUTH_SCOPE ?? "openid profile email basic_info";
-// Authentik: userinfo อยู่ข้าง token endpoint (.../application/o/userinfo/)
+// Authentik: userinfo อยู่ข้าง token endpoint
 const OAUTH_USERINFO_URL =
   process.env.OAUTH_USERINFO_URL ??
   OAUTH_TOKEN_URL.replace(/token\/$/, "userinfo/");
 
-// login เสร็จแล้วส่งกลับหน้าเว็บ (ตัวแรกของ CORS_ORIGIN)
 const FRONTEND_URL =
   process.env.CORS_ORIGIN?.split(",")[0]?.trim() || "http://localhost:5173";
 
@@ -56,13 +55,12 @@ type BasicInfo = {
   itaccounttype_id?: string;
 };
 
-// GET /auth/login — redirect ไปหน้า authorize ของ CPE OAuth
 router.get("/login", (req, res, next) => {
   try {
     if (!OAUTH_CLIENT_ID || !OAUTH_AUTHORIZE_URL || !OAUTH_REDIRECT_URL)
       throw new Error("OAuth is not configured");
 
-    // state กัน CSRF — เก็บใน cookie แล้วเทียบตอน callback
+    // state กัน CSRF
     const state = randomBytes(16).toString("hex");
     res.cookie(OAUTH_STATE_COOKIE, state, {
       ...cookieBase,
@@ -82,7 +80,6 @@ router.get("/login", (req, res, next) => {
   }
 });
 
-// error ของ callback → redirect ไปหน้า login ของ frontend พร้อม ?error=<code>
 class CallbackError extends Error {
   code: string;
   constructor(code: string, message?: string) {
@@ -97,8 +94,6 @@ function loginErrorUrl(code: string) {
   return url.toString();
 }
 
-// GET /auth/callback?code=&state= — แลก code → ดึง userinfo → upsert user
-// → ออก JWT ใส่ cookie แล้ว redirect กลับหน้าเว็บ
 router.get("/callback", async (req, res) => {
   try {
     if (req.query.error)
@@ -156,7 +151,7 @@ router.get("/callback", async (req, res) => {
         String(info.itaccounttype_id)
       );
 
-    // ข้อมูลจาก CMU เป็นข้อมูลล่าสุดเสมอ — อัปเดตทุกครั้งที่ login
+    // ข้อมูลจาก CMU ใหม่กว่าเสมอ — เขียนทับทุกครั้งที่ login
     const profile = {
       studentId: info.student_id || null,
       firstnameTh: info.firstname_TH || null,
@@ -167,7 +162,6 @@ router.get("/callback", async (req, res) => {
     };
     const now = new Date();
 
-    // มีอยู่แล้ว (import ไว้หรือเคย login) → อัปเดต profile + เวลา login, ไม่มี → สร้างใหม่
     const [user] = await dbClient
       .insert(usersTable)
       .values({
@@ -203,12 +197,10 @@ router.get("/callback", async (req, res) => {
   }
 });
 
-// GET /auth/me — ข้อมูลผู้ใช้ที่ login อยู่
 router.get("/me", authenticate, (req: AuthedRequest, res) => {
   res.json({ msg: "Fetch current user successfully", data: req.user });
 });
 
-// POST /auth/logout — ลบ cookie
 router.post("/logout", (req, res) => {
   res.clearCookie(AUTH_COOKIE, cookieBase);
   res.json({ msg: "Logout successfully", data: null });

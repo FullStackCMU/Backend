@@ -21,7 +21,6 @@ const router = Router();
 
 type RoundRow = typeof roundsTable.$inferSelect;
 
-// รอบที่แสดงบนการ์ดวิชา: รอบล่าสุดที่เปิดไปแล้ว ถ้ายังไม่มีเลยใช้รอบถัดไปที่จะเปิด
 function pickCurrentRound(rounds: RoundRow[], now: Date) {
   const started = rounds.filter((r) => r.opensAt <= now);
   if (started.length > 0)
@@ -127,7 +126,6 @@ async function listCourseSummaries(userId: string, onlyCourseId?: string) {
   });
 }
 
-// GET /courses — วิชาที่ฉันมี enrollment (ทั้งฐานะอาจารย์และนักศึกษา)
 router.get("/", authenticate, async (req: AuthedRequest, res, next) => {
   try {
     const data = await listCourseSummaries(req.user!.id);
@@ -137,7 +135,6 @@ router.get("/", authenticate, async (req: AuthedRequest, res, next) => {
   }
 });
 
-// POST /courses — บุคลากรสร้างวิชา ผู้สร้างได้ enrollment เป็น instructor อัตโนมัติ
 router.post(
   "/",
   authenticate,
@@ -160,8 +157,7 @@ router.post(
       if (!Number.isInteger(academicYear) || academicYear < 2500 || academicYear > 2700)
         throw new Error("ปีการศึกษาต้องเป็นปี พ.ศ. เช่น 2569");
 
-      // unique index ของ (course_code, section, semester, academic_year) ไม่กันแถวที่ section เป็น null
-      // (Postgres ถือว่า null ไม่ซ้ำกัน) จึงเช็คเองก่อน insert
+      // unique index ไม่กันแถวที่ section เป็น null (Postgres ถือว่า null ไม่ซ้ำกัน) จึงเช็คเอง
       const [existing] = await dbClient
         .select({ id: coursesTable.id })
         .from(coursesTable)
@@ -219,7 +215,6 @@ router.post(
   }
 );
 
-// GET /courses/:courseId — ข้อมูลวิชาเดียว (อาจารย์หรือนักศึกษาในวิชา)
 router.get(
   "/:courseId",
   authenticate,
@@ -234,7 +229,6 @@ router.get(
   }
 );
 
-// GET /courses/:courseId/students — รายชื่อนักศึกษา + กลุ่มปัจจุบัน
 router.get(
   "/:courseId/students",
   authenticate,
@@ -290,9 +284,7 @@ function parseImportRows(input: unknown[]) {
   return { rows, issues };
 }
 
-// POST /courses/:courseId/students/import { rows: [{ line, studentId, cmuAccount, nameTh }] }
-// Class Import: สร้าง user ถ้ายังไม่มี (ยังไม่เคย login → first_login_at เป็น null) แล้ว enroll เป็น student
-// ตรวจทุกแถวที่นี่ (frontend ตรวจเบื้องต้นเพื่อแสดงตัวอย่างเท่านั้น)
+// ตรวจทุกแถวที่นี่ — frontend ตรวจแค่เพื่อแสดงตัวอย่าง
 router.post(
   "/:courseId/students/import",
   authenticate,
@@ -367,7 +359,7 @@ router.post(
           } else if (owner) {
             invalid(`รหัสนักศึกษานี้ผูกกับบัญชี ${owner.cmuAccount} อยู่แล้ว`);
           } else {
-            // ชื่อไทยคำแรก = ชื่อ ที่เหลือ = นามสกุล (login ครั้งแรกจะอัปเดตจาก CMU อีกที)
+            // login ครั้งแรกจะเขียนทับชื่อด้วยข้อมูลจาก CMU
             const [firstnameTh, ...rest] = r.nameTh.split(" ");
             toCreate.push({
               cmuAccount: r.cmuAccount,
