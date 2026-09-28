@@ -19,7 +19,7 @@ import {
   toWarnings,
   type CommentWarning,
 } from "../lib/comment-check/index.ts";
-import { personColumns, toPerson } from "../lib/course-members.ts";
+import { displayName, personColumns } from "../lib/course-members.ts";
 import {
   authenticate,
   requireCourseRole,
@@ -91,7 +91,7 @@ async function loadContext(roundId: string, userId: string) {
   const targets = [
     ...members.filter((m) => m.id === userId),
     ...members.filter((m) => m.id !== userId),
-  ].map((m) => ({ ...toPerson(m), isSelf: m.id === userId }));
+  ].map((m) => ({ id: m.id, name: displayName(m), isSelf: m.id === userId }));
 
   const questions = await dbClient.select().from(questionsTable).orderBy(asc(questionsTable.orderNo));
 

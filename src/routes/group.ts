@@ -126,6 +126,22 @@ async function courseIdOfGroup(req: Request) {
   return group.courseId;
 }
 
+// มุมมองนักศึกษา: เพื่อนร่วมกลุ่มมีแค่ชื่อ — รหัสนักศึกษา/อีเมลเห็นได้เฉพาะอาจารย์
+function toStudentGroup(group: Awaited<ReturnType<typeof listGroups>>[number]) {
+  return {
+    id: group.id,
+    courseId: group.courseId,
+    name: group.name,
+    maxMembers: group.maxMembers,
+    contractText: group.contractText,
+    members: group.members.map((m) => ({
+      id: m.id,
+      name: m.name,
+      contractAcceptedAt: m.contractAcceptedAt,
+    })),
+  };
+}
+
 // GET /groups?courseId= — อาจารย์ดูทุกกลุ่ม + นักศึกษาที่ยังไม่มีกลุ่ม
 router.get(
   "/",
@@ -171,7 +187,7 @@ router.get(
       const [group] = membership
         ? await listGroups(req.courseId!, membership.groupId)
         : [];
-      res.json({ msg: "Fetch my group successfully", data: group ?? null });
+      res.json({ msg: "Fetch my group successfully", data: group ? toStudentGroup(group) : null });
     } catch (err) {
       next(err);
     }
@@ -352,7 +368,7 @@ router.post(
       });
 
       const [group] = await listGroups(courseId, groupId);
-      res.json({ msg: "Join group successfully", data: group });
+      res.json({ msg: "Join group successfully", data: toStudentGroup(group) });
     } catch (err) {
       next(err);
     }
@@ -410,7 +426,7 @@ router.post(
         );
 
       const [updated] = await listGroups(courseId, groupId);
-      res.json({ msg: "Accept contract successfully", data: updated });
+      res.json({ msg: "Accept contract successfully", data: toStudentGroup(updated) });
     } catch (err) {
       next(err);
     }
