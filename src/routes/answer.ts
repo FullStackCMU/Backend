@@ -80,7 +80,6 @@ async function loadContext(roundId: string, userId: string) {
         .where(eq(groupsTable.id, groupId))
     : [];
 
-  // ผู้ถูกประเมิน = สมาชิกปัจจุบันของกลุ่ม (รวมตัวเอง) — ตัวเองขึ้นก่อน
   const members = group
     ? await dbClient
         .select(personColumns)
@@ -163,10 +162,6 @@ function toResponse(ctx: Context, warnings: CommentWarning[] = []) {
 
 type AnswerRow = { questionId: string; evaluateeId: string; score: number | null; comment: string | null };
 
-/**
- * ตรวจคำตอบจาก client — rating: score เป็นจำนวนเต็มในสเกลของรอบ, text: comment ไม่เกิน 500 ตัวอักษร
- * ประเมินได้เฉพาะสมาชิกในกลุ่มตัวเอง แถวที่ยังไม่ตอบ (ว่าง) ไม่ต้องเก็บ
- */
 function parseAnswers(input: unknown, ctx: Context): AnswerRow[] {
   if (!Array.isArray(input)) throw new Error("answers ต้องเป็น array");
   const questions = new Map(ctx.questions.map((q) => [q.id, q]));
@@ -226,7 +221,6 @@ async function saveDraft(ctx: Context, userId: string, rows: AnswerRow[]) {
   });
 }
 
-/** ตรวจความเห็น (เฉพาะคำถามที่ระบุ ถ้าไม่ระบุ = ทุกข้อ) ด้วย AI — ชื่อสมาชิกกลุ่มถูกลบก่อนส่ง */
 function checkRows(ctx: Context, submissionId: string, rows: AnswerRow[], questionIds?: Set<string>) {
   return checkComments({
     submissionId,

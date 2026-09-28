@@ -30,7 +30,6 @@ function pickCurrentRound(rounds: RoundRow[], now: Date) {
   return rounds.reduce((a, b) => (b.sequenceNo < a.sequenceNo ? b : a));
 }
 
-// วิชาที่ผู้ใช้มี enrollment + จำนวนนักศึกษา + รอบปัจจุบัน (onlyCourseId = เอาวิชาเดียว)
 async function listCourseSummaries(userId: string, onlyCourseId?: string) {
   const courses = await dbClient
     .select({
@@ -92,7 +91,6 @@ async function listCourseSummaries(userId: string, onlyCourseId?: string) {
       and(inArray(enrollmentsTable.courseId, courseIds), eq(enrollmentsTable.role, "instructor"))
     );
 
-  // กลุ่มปัจจุบันของผู้ใช้ในแต่ละวิชา (อาจารย์ไม่มี)
   const myGroups = await dbClient
     .select({ courseId: groupMembersTable.courseId, id: groupsTable.id, name: groupsTable.name })
     .from(groupMembersTable)
@@ -258,7 +256,6 @@ const CMU_ACCOUNT_RE = /^[a-z0-9._-]+@cmu\.ac\.th$/;
 type ImportRow = { line: number; studentId: string; cmuAccount: string; nameTh: string };
 type ImportIssue = { line: number; reason: string; kind: "duplicate" | "invalid" };
 
-// ตรวจรูปแบบแต่ละแถว + แถวที่ซ้ำกันเองในไฟล์
 function parseImportRows(input: unknown[]) {
   const rows: ImportRow[] = [];
   const issues: ImportIssue[] = [];
@@ -350,7 +347,6 @@ router.post(
         const toSetStudentId: { id: string; studentId: string }[] = [];
         const toCreate: (typeof usersTable.$inferInsert)[] = [];
 
-        // เทียบกับข้อมูลในระบบ
         for (const r of rows) {
           const user = byAccount.get(r.cmuAccount);
           const owner = byStudentId.get(r.studentId);

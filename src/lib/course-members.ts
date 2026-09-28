@@ -33,7 +33,6 @@ export const personColumns = {
 
 type PersonRow = { [K in keyof typeof personColumns]: (typeof usersTable.$inferSelect)[K] };
 
-/** ข้อมูลคนที่ส่งให้ frontend — มี name สำเร็จรูป (หน้าเดิมยังใช้ member.name) */
 export function toPerson(row: PersonRow) {
   return {
     id: row.id,
@@ -44,7 +43,6 @@ export function toPerson(row: PersonRow) {
   };
 }
 
-/** นักศึกษาทุกคนในวิชา + กลุ่มที่อยู่ตอนนี้ (group_members ที่ left_at เป็น null) */
 export async function listCourseStudents(courseId: string) {
   const students = await dbClient
     .select(personColumns)

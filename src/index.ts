@@ -15,23 +15,15 @@ import groupRoute from "./routes/group.ts";
 import roundRoute from "./routes/round.ts";
 import userRoute from "./routes/user.ts";
 
-
 const debug = Debug("pf-backend");
 
 if (!process.env.JWT_SECRET)
   throw new Error("JWT_SECRET is not defined in .env");
 
-// Initializing the express app
 const app = express();
 
-//Middleware
 app.use(morgan("dev", { immediate: false }));
 app.use(helmet());
-// app.use(
-//   cors({
-//     origin: false, // Disable CORS
-//   }),
-// );
 app.use(
   cors({
     origin: process.env.CORS_ORIGIN?.split(",") ?? ["http://localhost:5173"],
@@ -41,7 +33,6 @@ app.use(
 
 app.use(express.json());
 
-// Routes
 app.use("/auth", authRoute);
 app.use("/consents", consentRoute);
 app.use("/users", userRoute);
@@ -94,7 +85,6 @@ const jsonErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
 };
 app.use(jsonErrorHandler);
 
-// Running app
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   debug(`Listening on port ${PORT}: http://localhost:${PORT}`);

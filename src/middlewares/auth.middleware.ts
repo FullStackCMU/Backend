@@ -6,7 +6,6 @@ import jwt from "jsonwebtoken";
 
 const JWT_SECRET = process.env.JWT_SECRET as string;
 
-// JWT ของระบบเก็บใน httpOnly cookie นี้ (ออกให้ตอน /auth/callback)
 export const AUTH_COOKIE = "cr_token";
 
 export type EnrollmentRole = (typeof enrollmentsTable.$inferSelect)["role"];
@@ -31,8 +30,7 @@ function unauthorized(res: Response, message: string) {
   return res.status(401).json({ message, type: "Unauthorized" });
 }
 
-// อ่าน JWT จาก cookie แล้วโหลด user จาก DB ทุก request
-// (account_type / สิทธิ์ต้องมาจาก DB ไม่ใช่จาก token)
+// โหลด user จาก DB ทุก request — account_type / สิทธิ์ต้องมาจาก DB ไม่ใช่จาก token
 export async function authenticate(
   req: AuthedRequest,
   res: Response,
@@ -77,15 +75,13 @@ export function requireStaff(
   next();
 }
 
-// ค่า default หา courseId จาก :courseId, ?courseId= หรือ body.courseId
 function defaultCourseId(req: Request) {
   const value =
     req.params.courseId ?? req.query.courseId ?? req.body?.courseId;
   return typeof value === "string" ? value : undefined;
 }
 
-// ต้องลงทะเบียนในวิชานั้นด้วย role ที่กำหนด (เช็คจาก enrollments)
-// getCourseId หา courseId จาก request — async ได้ (เช่น หาจาก groupId ใน DB)
+// getCourseId เป็น async ได้ (เช่น หา courseId จาก groupId ใน DB)
 export function requireCourseRole(
   role: EnrollmentRole | EnrollmentRole[],
   getCourseId: (req: Request) => string | undefined | Promise<string | undefined> = defaultCourseId

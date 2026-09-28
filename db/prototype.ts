@@ -143,7 +143,6 @@ const COURSE2_ROUND1: Record<string, Record<string, [Scores, Comments]>> = {
 type Question = typeof questionsTable.$inferSelect;
 type User = typeof usersTable.$inferSelect;
 
-/** ใส่ submission (ส่งแล้ว) + ratings ของทุกคนในรอบ ตามข้อมูล evaluator → evaluatee */
 async function insertRoundAnswers(opts: {
   roundId: string;
   answers: Record<string, Record<string, [Scores, Comments]>>;

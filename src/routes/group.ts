@@ -20,7 +20,6 @@ const router = Router();
 const MAX_GROUP_SIZE = 50;
 const MAX_CONTRACT_LENGTH = 5000;
 
-// กลุ่มในวิชา + สมาชิกปัจจุบัน (left_at เป็น null) — onlyGroupId = เอากลุ่มเดียว
 async function listGroups(courseId: string, onlyGroupId?: string) {
   const groups = await dbClient
     .select({
@@ -100,7 +99,6 @@ function parseGroupInput(body: Record<string, unknown>) {
   return out;
 }
 
-// ชื่อกลุ่มในวิชาเดียวกันห้ามซ้ำ (ไม่สนตัวพิมพ์เล็ก/ใหญ่)
 async function assertUniqueName(courseId: string, name: string, exceptGroupId?: string) {
   const [dup] = await dbClient
     .select({ id: groupsTable.id })
@@ -115,7 +113,6 @@ async function assertUniqueName(courseId: string, name: string, exceptGroupId?: 
   if (dup) throw new Error("มีกลุ่มชื่อนี้ในวิชานี้แล้ว");
 }
 
-// /groups/:groupId → หา courseId จากกลุ่ม เพื่อเช็คสิทธิ์ในวิชานั้น
 async function courseIdOfGroup(req: Request) {
   const [group] = await dbClient
     .select({ courseId: groupsTable.courseId })

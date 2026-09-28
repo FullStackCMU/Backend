@@ -84,7 +84,6 @@ export const coursesTable = pgTable(
   ]
 );
 
-// ใครอยู่วิชาไหน ในบทบาทอะไร
 export const enrollmentsTable = pgTable(
   "enrollments",
   {
@@ -108,7 +107,6 @@ export const groupsTable = pgTable("groups", {
     .notNull(),
   name: varchar("name").notNull(),
   maxMembers: smallint("max_members"),
-  // Contract/Rules
   contractText: text("contract_text"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
@@ -173,7 +171,6 @@ export const questionsTable = pgTable("questions", {
   prompt: text("prompt").notNull(),
 });
 
-// การส่งแบบประเมิน 1 ครั้งต่อ evaluator ต่อรอบ
 export const submissionsTable = pgTable(
   "submissions",
   {

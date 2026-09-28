@@ -7,7 +7,6 @@ import { authenticate, type AuthedRequest } from "../middlewares/auth.middleware
 
 const router = Router();
 
-// ความยินยอมที่ยังมีผลของผู้ใช้ สำหรับนโยบายเวอร์ชันปัจจุบัน
 async function findActiveConsent(userId: string) {
   const [consent] = await dbClient
     .select({ acceptedAt: consentsTable.acceptedAt })

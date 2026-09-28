@@ -176,7 +176,6 @@ router.get(
 
       let scores = null;
       if (scoresReleased && !withheld) {
-        // คะแนนที่ฉันให้ตัวเอง (เฉพาะที่ส่งแล้ว)
         const selfRatings =
           mine?.status === "submitted"
             ? await dbClient
@@ -264,7 +263,6 @@ type ReceivedRow = {
   comment: string | null;
 };
 
-// คำตอบทั้งหมดของรอบจาก submission ที่ส่งแล้ว
 async function roundRatings(roundId: string): Promise<ReceivedRow[]> {
   return dbClient
     .select({
@@ -376,11 +374,9 @@ router.get(
       const received = (await roundRatings(round.id)).filter((r) => r.evaluateeId === studentId);
       const names = new Map(students.map((s) => [s.id, s.name]));
 
-      // ตัวเองก่อน แล้วตามด้วยเพื่อน
       const evaluatorIds = [...new Set(received.map((r) => r.evaluatorId))].sort((a, b) =>
         a === studentId ? -1 : b === studentId ? 1 : 0
       );
-      // คำเตือนจาก AI ในรอบนี้ ทั้งที่นักศึกษาคนนี้เขียน และที่คนอื่นเขียนถึงนักศึกษาคนนี้
       const flags = await dbClient
         .select({
           evaluatorId: submissionsTable.evaluatorId,

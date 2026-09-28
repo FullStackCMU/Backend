@@ -56,7 +56,6 @@ function parseIntInRange(value: unknown, min: number, max: number, message: stri
   return n;
 }
 
-// /rounds/:roundId → หารอบ (และ courseId) เพื่อเช็คสิทธิ์ในวิชานั้น
 async function findRound(roundId: string) {
   const [round] = await dbClient.select().from(roundsTable).where(eq(roundsTable.id, roundId));
   if (!round) throw httpError(404, "ไม่พบรอบประเมินนี้");
@@ -65,15 +64,12 @@ async function findRound(roundId: string) {
 const courseIdOfRound = async (req: Request) =>
   (await findRound(String(req.params.roundId))).courseId;
 
-// นักศึกษาที่มีกลุ่มในวิชาตอนนี้ (left_at เป็น null) — ใช้นับความคืบหน้า
 const activeMembers = (courseId: string) =>
   dbClient
     .select({ userId: groupMembersTable.userId })
     .from(groupMembersTable)
     .where(and(eq(groupMembersTable.courseId, courseId), isNull(groupMembersTable.leftAt)));
 
-// รอบในวิชา — อาจารย์ได้ submittedCount/studentCount (นับเฉพาะคนที่มีกลุ่ม)
-// นักศึกษา (viewerId) ได้ mySubmission ของตัวเองในแต่ละรอบ
 async function listRounds(courseId: string, viewer: { role: "instructor" } | { role: "student"; userId: string }) {
   const rounds = await dbClient
     .select()
