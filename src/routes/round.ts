@@ -253,8 +253,6 @@ router.post(
         intervalWeeks * 7,
         `ระยะเปิดรับต้องเป็น 1–${intervalWeeks * 7} วัน (ไม่เกินระยะห่างระหว่างรอบ)`
       );
-      const scaleMin = parseIntInRange(req.body.scaleMin, 0, 1, "คะแนนต่ำสุดต้องเป็น 0 หรือ 1");
-      const scaleMax = parseIntInRange(req.body.scaleMax, 3, 10, "คะแนนสูงสุดต้องเป็น 3–10");
       const firstOpensAt = parseDate(req.body.firstOpensAt, "วันเปิดรอบแรก");
       if (firstOpensAt.getTime() < Date.now() - PAST_TOLERANCE)
         throw new Error("วันเปิดรอบแรกต้องเป็นเวลาในอนาคต");
@@ -271,13 +269,12 @@ router.post(
       const startSeq = (last?.sequenceNo ?? 0) + 1;
       const values = Array.from({ length: total }, (_, k) => {
         const opensAt = new Date(firstOpensAt.getTime() + k * intervalWeeks * 7 * DAY);
+        // สเกลใช้ค่า default 1–5 ของตาราง — คำอธิบายระดับในรูบริกผูกกับ 1–5
         return {
           courseId,
           sequenceNo: startSeq + k,
           opensAt,
           closesAt: endOfThaiDay(opensAt, openDays - 1),
-          scaleMin,
-          scaleMax,
         };
       });
 

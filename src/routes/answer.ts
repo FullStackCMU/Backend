@@ -145,7 +145,14 @@ function toResponse(ctx: Context, warnings: CommentWarning[] = []) {
     },
     group: ctx.group ? { id: ctx.group.id, name: ctx.group.name } : null,
     targets: ctx.targets,
-    questions: ctx.questions.map((q) => ({ id: q.id, orderNo: q.orderNo, type: q.type, prompt: q.prompt })),
+    questions: ctx.questions.map((q) => ({
+      id: q.id,
+      orderNo: q.orderNo,
+      type: q.type,
+      prompt: q.prompt,
+      description: q.description,
+      anchors: q.anchors ?? [],
+    })),
     submission: ctx.submission
       ? { status: ctx.submission.status, submittedAt: ctx.submission.submittedAt }
       : null,

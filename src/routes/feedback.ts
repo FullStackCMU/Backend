@@ -14,6 +14,7 @@ import { and, asc, eq, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { randomInt } from "node:crypto";
 import { MIN_PEERS_FOR_ANONYMITY } from "../config.ts";
 import { listCourseStudents } from "../lib/course-members.ts";
+import { groupSignals, median } from "../lib/insights.ts";
 import { Router, type Request } from "express";
 import {
   authenticate,
@@ -43,6 +44,21 @@ function shuffle<T>(items: T[]) {
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
+
+// คะแนนรวม = เฉลี่ยของคะแนนรายมิติ, gap = ตัวเอง − เพื่อน (บวก = ให้ตัวเองสูงกว่า)
+function overallOf(scores: { peerAverage: number | null; selfScore: number | null }[]) {
+  const mean = (xs: (number | null)[]) => {
+    const ys = xs.filter((x): x is number => x !== null);
+    return ys.length ? round1(ys.reduce((a, b) => a + b, 0) / ys.length) : null;
+  };
+  const peerAverage = mean(scores.map((s) => s.peerAverage));
+  const selfAverage = mean(scores.map((s) => s.selfScore));
+  return {
+    peerAverage,
+    selfAverage,
+    gap: peerAverage !== null && selfAverage !== null ? round1(selfAverage - peerAverage) : null,
+  };
+}
 
 router.get("/", authenticate, async (req: AuthedRequest, res, next) => {
   try {
@@ -232,6 +248,7 @@ router.get(
           withheldReason: withheld ? "ผู้ประเมินไม่พอสำหรับแสดงผลแบบไม่ระบุชื่อ" : null,
           minPeers: MIN_PEERS_FOR_ANONYMITY,
           scores,
+          overall: scores ? overallOf(scores) : null,
           comments,
         },
       });
@@ -274,7 +291,7 @@ router.get(
   async (req: AuthedRequest, res, next) => {
     try {
       const round = await findRound(String(req.params.roundId));
-      const [questions, students, submissions, ratings, groups] = await Promise.all([
+      const [questions, students, submissions, ratings, groups, ignoredFlags] = await Promise.all([
         dbClient.select().from(questionsTable).orderBy(asc(questionsTable.orderNo)),
         listCourseStudents(round.courseId),
         dbClient
@@ -292,6 +309,11 @@ router.get(
           .from(groupsTable)
           .where(eq(groupsTable.courseId, round.courseId))
           .orderBy(asc(groupsTable.createdAt)),
+        dbClient
+          .select({ evaluatorId: submissionsTable.evaluatorId, evaluateeId: flagsTable.evaluateeId })
+          .from(flagsTable)
+          .innerJoin(submissionsTable, eq(submissionsTable.id, flagsTable.submissionId))
+          .where(and(eq(submissionsTable.roundId, round.id), eq(flagsTable.studentAction, "ignored"))),
       ]);
       const ratingQuestions = questions.filter((q) => q.type === "rating");
 
@@ -299,20 +321,42 @@ router.get(
         const own = submissions.find((x) => x.evaluatorId === s.id);
         const peer = ratings.filter((r) => r.evaluateeId === s.id && r.evaluatorId !== s.id);
         const groupId = own?.groupId ?? peer[0]?.groupId ?? s.group?.id ?? null;
+        const scores = ratingQuestions.map((q) => ({
+          questionId: q.id,
+          peerAverage: average(peer.filter((r) => r.questionId === q.id && r.score !== null).map((r) => r.score!)),
+          selfScore:
+            ratings.find((r) => r.evaluatorId === s.id && r.evaluateeId === s.id && r.questionId === q.id)?.score ??
+            null,
+        }));
+        // เฉลี่ยคะแนนจากเพื่อนเฉพาะมิติด้านงาน / ด้านทีม
+        const focusAverage = (focus: "task" | "team") =>
+          average(
+            scores.flatMap((x, i) =>
+              ratingQuestions[i].focus === focus && x.peerAverage !== null ? [x.peerAverage] : []
+            )
+          );
         return {
           student: { id: s.id, studentId: s.studentId, name: s.name },
           groupId,
           submission: own ? { status: own.status, submittedAt: own.submittedAt } : null,
           peerCount: new Set(peer.map((r) => r.evaluatorId)).size,
-          scores: ratingQuestions.map((q) => ({
-            questionId: q.id,
-            peerAverage: average(peer.filter((r) => r.questionId === q.id && r.score !== null).map((r) => r.score!)),
-            selfScore:
-              ratings.find((r) => r.evaluatorId === s.id && r.evaluateeId === s.id && r.questionId === q.id)?.score ??
-              null,
-          })),
+          scores,
+          overall: overallOf(scores),
+          focus: { task: focusAverage("task"), team: focusAverage("team") },
         };
       });
+
+      const ratingIds = new Set(ratingQuestions.map((q) => q.id));
+      const scores = ratings.flatMap((r) =>
+        r.score !== null && ratingIds.has(r.questionId) ? [{ ...r, score: r.score }] : []
+      );
+      // ความเห็นถึงตัวเองมีแต่อาจารย์เห็น ไม่นับเป็นข้อความถึงเพื่อน
+      const ignoredWarnings = new Map<string, number>();
+      for (const f of ignoredFlags)
+        if (f.evaluateeId !== f.evaluatorId)
+          ignoredWarnings.set(f.evaluatorId, (ignoredWarnings.get(f.evaluatorId) ?? 0) + 1);
+      const closed = new Date() >= round.closesAt;
+      const defined = (xs: (number | null)[]) => xs.filter((x): x is number => x !== null);
 
       res.json({
         msg: "Fetch round overview successfully",
@@ -328,10 +372,36 @@ router.get(
             scoresReleasedAt: round.scoresReleasedAt,
             feedbackReleasedAt: round.feedbackReleasedAt,
           },
-          questions: ratingQuestions.map((q) => ({ id: q.id, orderNo: q.orderNo, prompt: q.prompt })),
+          questions: ratingQuestions.map((q) => ({ id: q.id, orderNo: q.orderNo, prompt: q.prompt, focus: q.focus })),
+          // ค่ากลางของทั้งวิชาในรอบนี้ — เส้นแบ่งช่องของแผนภาพทีม
+          section: {
+            selfMedian: median(defined(rows.map((r) => r.overall.selfAverage))),
+            peerMedian: median(defined(rows.map((r) => r.overall.peerAverage))),
+            taskMedian: median(defined(rows.map((r) => r.focus.task))),
+            teamMedian: median(defined(rows.map((r) => r.focus.team))),
+          },
           groups: [
-            ...groups.map((g) => ({ id: g.id, name: g.name, rows: rows.filter((r) => r.groupId === g.id) })),
-            { id: null, name: "ยังไม่มีกลุ่ม", rows: rows.filter((r) => !r.groupId) },
+            ...groups.map((g) => {
+              const members = rows.filter((r) => r.groupId === g.id);
+              return {
+                id: g.id,
+                name: g.name,
+                rows: members,
+                signals: groupSignals({
+                  members,
+                  scores,
+                  ignoredWarnings,
+                  closed,
+                  minPeers: MIN_PEERS_FOR_ANONYMITY,
+                }),
+              };
+            }),
+            {
+              id: null,
+              name: "ยังไม่มีกลุ่ม",
+              rows: rows.filter((r) => !r.groupId),
+              signals: { received: [], givers: [] },
+            },
           ].filter((g) => g.rows.length > 0),
           minPeers: MIN_PEERS_FOR_ANONYMITY,
         },
