@@ -11,6 +11,7 @@
     "db:push": "drizzle-kit push",
     "db:migrate": "drizzle-kit migrate",
     "db:prototype": "tsx ./db/prototype.ts",
+    "db:seed-rubric": "tsx ./db/seed-rubric.ts",
     "eval:comments": "tsx ./scripts/comment-check-eval.ts"
   },
   "keywords": [],

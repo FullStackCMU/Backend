@@ -7,6 +7,7 @@ import {
   varchar,
   smallint,
   text,
+  jsonb,
   unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -19,6 +20,8 @@ export const enrollmentRoleEnum = pgEnum("enrollment_role", [
 export const accountTypeEnum = pgEnum("account_type", ["StdAcc", "MISEmpAcc"]);
 
 export const questionTypeEnum = pgEnum("question_type", ["rating", "text"]);
+
+export const questionFocusEnum = pgEnum("question_focus", ["task", "team"]);
 
 export const submissionStatusEnum = pgEnum("submission_status", [
   "draft",
@@ -160,12 +163,19 @@ export const roundsTable = pgTable(
   (table) => [unique().on(table.courseId, table.sequenceNo)]
 );
 
+export type QuestionAnchor = { score: number; text: string };
+
 // ชุดคำถามเดียวใช้ทุกรอบ (ไม่ผูกกับรอบ) — อาจารย์ยังสร้างเองไม่ได้
 export const questionsTable = pgTable("questions", {
   id: uuid("id").primaryKey().defaultRandom(),
   orderNo: smallint("order_no").notNull(),
   type: questionTypeEnum("type").notNull(),
   prompt: text("prompt").notNull(),
+  description: text("description"),
+  // เฉพาะ rating — ระดับที่ไม่มีในนี้คือ "อยู่ระหว่าง" ระดับข้างเคียง
+  anchors: jsonb("anchors").$type<QuestionAnchor[]>(),
+  // เฉพาะ rating — แบ่งมิติเป็นด้านงาน/ด้านทีมสำหรับแผนภาพทีม
+  focus: questionFocusEnum("focus"),
 });
 
 export const submissionsTable = pgTable(
