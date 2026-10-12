@@ -514,6 +514,51 @@ async function seedAll() {
     submittedAt: daysFromNow(-15),
   });
 
+  // ฟีดแบ็กจากอาจารย์: รอบ 1 ของ 261497 เขียนแล้วบางคน (รอบ 2 เว้นว่างไว้ให้ลองเขียน), patiphan เห็นของตัวเองในรอบ 1 ของ 261492
+  // เขียนถึงเฉพาะคนที่มีเพื่อนประเมินอย่างน้อย 2 คน — ไม่งั้นข้อความจะบอกใบ้ว่าเพื่อนคนเดียวนั้นให้คะแนนอย่างไร
+  const notes: { round: typeof round1; key: string; daysAgo: number; body: string }[] = [
+    {
+      round: round1,
+      key: "napat",
+      daysAgo: 25,
+      body: "ทำงานได้สม่ำเสมอและเพื่อนในทีมเห็นตรงกันทุกด้าน รอบถัดไปลองรับบทนำการประชุมดูบ้าง จะได้ฝึกดูภาพรวมของทีม",
+    },
+    {
+      round: round1,
+      key: "preecha",
+      daysAgo: 25,
+      body: "คะแนนด้านการมีส่วนร่วมและการดูแลให้ทีมเดินตามแผนยังต่ำกว่าเพื่อนในกลุ่ม ลองเลือกรับงานชิ้นเล็กที่ทำเสร็จได้ภายในสัปดาห์ แล้วแจ้งความคืบหน้าในกลุ่มทุกครั้งที่เสร็จ ถ้าติดปัญหาเรื่องเวลาหรือเนื้อหา มาคุยกับอาจารย์หลังคาบได้",
+    },
+    {
+      round: round1,
+      key: "suda",
+      daysAgo: 25,
+      body: "คะแนนที่ให้เพื่อนต่ำกว่าที่คนอื่นในกลุ่มให้ค่อนข้างมาก ไม่ได้แปลว่าผิด แต่อยากให้เขียนเหตุผลประกอบในช่องความเห็นให้ชัดว่าเกิดอะไรขึ้นและอยากให้ปรับอย่างไร เพื่อนจะได้นำไปใช้ได้จริง",
+    },
+    {
+      round: round1,
+      key: "chaiwat",
+      daysAgo: 25,
+      body: "เพื่อนในทีมให้คะแนนสูงกว่าที่ให้ตัวเองทุกด้าน แสดงว่างานที่ทำมีคุณค่ากับทีมมากกว่าที่คิด ลองมั่นใจและเสนอความเห็นในที่ประชุมให้มากขึ้น",
+    },
+    {
+      round: c2round1,
+      key: "patiphan",
+      daysAgo: 9,
+      body: "ดูแลการ deploy และ CI ให้ทีมได้ดี และเพื่อนให้คะแนนสูงกว่าที่ให้ตัวเองเกือบทุกด้าน\nรอบถัดไปลองแบ่งงาน deploy ให้เพื่อนได้ทำบ้าง และเปิด PR ให้ทีมเห็นก่อนแก้โค้ดส่วนของคนอื่น",
+    },
+  ];
+  await dbClient.insert(instructorNotesTable).values(
+    notes.map((n) => ({
+      roundId: n.round.id,
+      studentId: byKey[n.key].id,
+      authorId: instructor.id,
+      body: n.body,
+      updatedAt: daysFromNow(-n.daysAgo),
+      createdAt: daysFromNow(-n.daysAgo),
+    }))
+  );
+
   console.log({
     instructor: `${instructor.cmuAccount} (${instructor.id})`,
     students: students.map((s) => `${s.cmuAccount} ${s.studentId} (${s.id})`),
@@ -525,6 +570,7 @@ async function seedAll() {
     questions: questions.length,
     round1Submissions: Object.keys(ROUND1).length,
     course2: `${course2.courseCode} ${course2.title} — ${orion.name}, rounds #${c2round1.sequenceNo} (released) #${c2round2.sequenceNo} (open)`,
+    instructorNotes: notes.length,
   });
 }
 
