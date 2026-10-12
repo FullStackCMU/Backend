@@ -10,6 +10,7 @@ import {
   submissionsTable,
   ratingsTable,
   flagsTable,
+  instructorNotesTable,
   consentsTable,
 } from "@db/schema.js";
 import { RUBRIC } from "@db/rubric.js";
@@ -23,6 +24,7 @@ const CONSENT_POLICY_VERSION = "2026-09-v4";
 // ลบลูกก่อนแม่ ไม่งั้นติด foreign key
 async function resetAll() {
   await dbClient.delete(consentsTable);
+  await dbClient.delete(instructorNotesTable);
   await dbClient.delete(flagsTable);
   await dbClient.delete(ratingsTable);
   await dbClient.delete(submissionsTable);
