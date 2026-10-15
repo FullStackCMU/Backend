@@ -5,15 +5,17 @@ import {
   flagsTable,
   groupMembersTable,
   groupsTable,
+  instructorNotesTable,
   questionsTable,
   ratingsTable,
   roundsTable,
   submissionsTable,
+  usersTable,
 } from "@db/schema.js";
 import { and, asc, eq, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { randomInt } from "node:crypto";
 import { MIN_PEERS_FOR_ANONYMITY } from "../config.ts";
-import { listCourseStudents } from "../lib/course-members.ts";
+import { displayName, listCourseStudents } from "../lib/course-members.ts";
 import { groupSignals, median } from "../lib/insights.ts";
 import { Router, type Request } from "express";
 import {
@@ -44,6 +46,26 @@ function shuffle<T>(items: T[]) {
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
+
+const MAX_NOTE_LENGTH = 2000;
+
+// ฟีดแบ็กจากอาจารย์ถึงนักศึกษาในรอบนี้ — ผู้เขียนคืออาจารย์คนล่าสุดที่แก้
+async function findNote(roundId: string, studentId: string) {
+  const [note] = await dbClient
+    .select({
+      body: instructorNotesTable.body,
+      updatedAt: instructorNotesTable.updatedAt,
+      cmuAccount: usersTable.cmuAccount,
+      firstnameTh: usersTable.firstnameTh,
+      lastnameTh: usersTable.lastnameTh,
+      firstnameEn: usersTable.firstnameEn,
+      lastnameEn: usersTable.lastnameEn,
+    })
+    .from(instructorNotesTable)
+    .innerJoin(usersTable, eq(usersTable.id, instructorNotesTable.authorId))
+    .where(and(eq(instructorNotesTable.roundId, roundId), eq(instructorNotesTable.studentId, studentId)));
+  return note ? { body: note.body, updatedAt: note.updatedAt, authorName: displayName(note) } : null;
+}
 
 // คะแนนรวม = เฉลี่ยของคะแนนรายมิติ, gap = ตัวเอง − เพื่อน (บวก = ให้ตัวเองสูงกว่า)
 function overallOf(scores: { peerAverage: number | null; selfScore: number | null }[]) {
@@ -250,6 +272,8 @@ router.get(
           scores,
           overall: scores ? overallOf(scores) : null,
           comments,
+          // มาจากอาจารย์ ไม่ใช่เพื่อน จึงไม่ติดกฎผู้ประเมินขั้นต่ำ — เผยแพร่พร้อมความเห็นจากเพื่อน
+          instructorNote: feedbackReleased ? await findNote(round.id, userId) : null,
         },
       });
     } catch (err) {
@@ -291,7 +315,7 @@ router.get(
   async (req: AuthedRequest, res, next) => {
     try {
       const round = await findRound(String(req.params.roundId));
-      const [questions, students, submissions, ratings, groups, ignoredFlags] = await Promise.all([
+      const [questions, students, submissions, ratings, groups, ignoredFlags, notes] = await Promise.all([
         dbClient.select().from(questionsTable).orderBy(asc(questionsTable.orderNo)),
         listCourseStudents(round.courseId),
         dbClient
@@ -314,7 +338,12 @@ router.get(
           .from(flagsTable)
           .innerJoin(submissionsTable, eq(submissionsTable.id, flagsTable.submissionId))
           .where(and(eq(submissionsTable.roundId, round.id), eq(flagsTable.studentAction, "ignored"))),
+        dbClient
+          .select({ studentId: instructorNotesTable.studentId })
+          .from(instructorNotesTable)
+          .where(eq(instructorNotesTable.roundId, round.id)),
       ]);
+      const noted = new Set(notes.map((n) => n.studentId));
       const ratingQuestions = questions.filter((q) => q.type === "rating");
 
       const rows = students.map((s) => {
@@ -343,6 +372,7 @@ router.get(
           scores,
           overall: overallOf(scores),
           focus: { task: focusAverage("task"), team: focusAverage("team") },
+          hasNote: noted.has(s.id),
         };
       });
 
@@ -500,8 +530,46 @@ router.get(
           scale: { min: round.scaleMin, max: round.scaleMax },
           evaluations,
           writtenFlags,
+          note: await findNote(round.id, studentId),
+          canWriteNote: new Date() >= round.closesAt,
         },
       });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// ข้อความว่าง = ลบ
+router.put(
+  "/rounds/:roundId/students/:studentId/note",
+  authenticate,
+  requireCourseRole("instructor", courseIdOfRound),
+  async (req: AuthedRequest, res, next) => {
+    try {
+      const round = await findRound(String(req.params.roundId));
+      const studentId = String(req.params.studentId);
+      if (new Date() < round.closesAt) throw new Error("เขียนฟีดแบ็กได้หลังรอบปิดรับ");
+      const students = await listCourseStudents(round.courseId);
+      if (!students.some((s) => s.id === studentId)) throw httpError(404, "ไม่พบนักศึกษาคนนี้ในวิชา");
+
+      const body = String(req.body?.body ?? "").trim();
+      if (body.length > MAX_NOTE_LENGTH) throw new Error(`ฟีดแบ็กยาวเกิน ${MAX_NOTE_LENGTH} ตัวอักษร`);
+
+      if (!body)
+        await dbClient
+          .delete(instructorNotesTable)
+          .where(and(eq(instructorNotesTable.roundId, round.id), eq(instructorNotesTable.studentId, studentId)));
+      else
+        await dbClient
+          .insert(instructorNotesTable)
+          .values({ roundId: round.id, studentId, authorId: req.user!.id, body })
+          .onConflictDoUpdate({
+            target: [instructorNotesTable.roundId, instructorNotesTable.studentId],
+            set: { body, authorId: req.user!.id, updatedAt: new Date() },
+          });
+
+      res.json({ msg: "Save instructor note successfully", data: await findNote(round.id, studentId) });
     } catch (err) {
       next(err);
     }

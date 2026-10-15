@@ -4,6 +4,7 @@ import {
   enrollmentsTable,
   groupMembersTable,
   groupsTable,
+  instructorNotesTable,
   questionsTable,
   ratingsTable,
   roundsTable,
@@ -349,6 +350,8 @@ router.delete(
       if (round.opensAt <= new Date()) throw new Error("ลบได้เฉพาะรอบที่ยังไม่เปิดรับ");
 
       await dbClient.transaction(async (tx) => {
+        // รอบที่เคยปิดแล้วถูกเลื่อนวันกลับไปอนาคตอาจมีฟีดแบ็กจากอาจารย์ค้างอยู่
+        await tx.delete(instructorNotesTable).where(eq(instructorNotesTable.roundId, round.id));
         await tx.delete(roundsTable).where(eq(roundsTable.id, round.id));
         // เลื่อนจากน้อยไปมาก ไม่งั้นชน unique (course_id, sequence_no)
         const later: RoundRow[] = await tx

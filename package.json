@@ -12,7 +12,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:prototype": "tsx ./db/prototype.ts",
     "db:seed-rubric": "tsx ./db/seed-rubric.ts",
-    "eval:comments": "tsx ./scripts/comment-check-eval.ts"
+    "eval:comments": "tsx ./scripts/comment-check-eval.ts",
+    "test": "vitest run"
   },
   "keywords": [],
   "author": "",
@@ -51,6 +52,7 @@
     "@types/morgan": "^1.9.10",
     "@types/node": "^26.0.1",
     "drizzle-kit": "^0.31.10",
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.14",
+    "vitest": "^5.0.3"
   }
 }

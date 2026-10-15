@@ -234,6 +234,30 @@ export const flagsTable = pgTable("flags", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
+// ฟีดแบ็กจากอาจารย์ถึงนักศึกษารายคน หนึ่งข้อความต่อรอบ — นักศึกษาเห็นเมื่อ feedback_released_at ถึงแล้ว
+export const instructorNotesTable = pgTable(
+  "instructor_notes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    roundId: uuid("round_id")
+      .references(() => roundsTable.id)
+      .notNull(),
+    studentId: uuid("student_id")
+      .references(() => usersTable.id)
+      .notNull(),
+    // อาจารย์คนล่าสุดที่แก้
+    authorId: uuid("author_id")
+      .references(() => usersTable.id)
+      .notNull(),
+    body: text("body").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => [unique().on(table.roundId, table.studentId)]
+);
+
 // ถอนความยินยอมใช้ withdrawn_at ไม่ลบแถว
 export const consentsTable = pgTable(
   "consents",
